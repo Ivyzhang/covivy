@@ -1,0 +1,2 @@
+"""Self-hosted coverage service."""
+
