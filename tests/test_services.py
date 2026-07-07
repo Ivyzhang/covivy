@@ -30,6 +30,7 @@ from app.services import (
     sync_installation_repositories_event,
     sync_installation_event,
     update_github_failure_status,
+    update_github_pending_coverage,
     update_github_pr,
 )
 
@@ -649,6 +650,132 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(fake.statuses, [])
         self.assertEqual(len(fake.comments), 1)
         self.assertIsNotNone(annotation)
+
+    def test_update_github_pending_coverage_reuses_comment_for_current_head(self):
+        with self.Session() as session:
+            repository = Repository(
+                owner="octo",
+                name="demo",
+                full_name="octo/demo",
+                default_branch="main",
+                private=False,
+            )
+            session.add(repository)
+            session.flush()
+            old_commit = Commit(repository_id=repository.id, sha="old123", branch="feature")
+            session.add(old_commit)
+            session.flush()
+            pull = PullRequest(
+                repository_id=repository.id,
+                github_pr_number=7,
+                head_sha="new456",
+                base_sha="base123",
+                state="open",
+                title="Add API",
+            )
+            upload = Upload(
+                repository_id=repository.id,
+                commit_id=old_commit.id,
+                format="lcov",
+                storage_path=str(Path(self.tmpdir.name) / "lcov.info"),
+                status="processed",
+            )
+            session.add_all([pull, upload])
+            session.flush()
+            old_report = CoverageReportRow(
+                repository_id=repository.id,
+                commit_id=old_commit.id,
+                upload_id=upload.id,
+                line_rate=1.0,
+                covered_lines=1,
+                total_lines=1,
+            )
+            session.add(old_report)
+            session.flush()
+            annotation = PrAnnotation(
+                pull_request_id=pull.id,
+                report_id=old_report.id,
+                patch_covered_lines=1,
+                patch_total_lines=1,
+                patch_line_rate=1.0,
+                github_comment_id=12345,
+                status="success",
+            )
+            session.add(annotation)
+            session.flush()
+
+            fake = FakeInstallationClient()
+            fake.pull_payload = {
+                "number": 7,
+                "head": {"sha": "new456", "ref": "feature"},
+                "base": {"sha": "base123", "ref": "main"},
+                "state": "open",
+                "title": "Add API",
+            }
+            asyncio.run(update_github_pending_coverage(session, self.settings, fake, pull))
+
+        self.assertEqual(fake.statuses[0]["sha"], "new456")
+        self.assertEqual(fake.statuses[0]["state"], "pending")
+        self.assertIn("Waiting for coverage report", fake.statuses[0]["description"])
+        self.assertEqual(fake.comments[0]["comment_id"], 12345)
+        self.assertIn("Waiting for coverage report", fake.comments[0]["body"])
+        self.assertIn("new456", fake.comments[0]["body"])
+
+    def test_update_github_pending_coverage_skips_when_head_report_exists(self):
+        with self.Session() as session:
+            repository = Repository(
+                owner="octo",
+                name="demo",
+                full_name="octo/demo",
+                default_branch="main",
+                private=False,
+            )
+            session.add(repository)
+            session.flush()
+            commit = Commit(repository_id=repository.id, sha="new456", branch="feature")
+            session.add(commit)
+            session.flush()
+            pull = PullRequest(
+                repository_id=repository.id,
+                github_pr_number=7,
+                head_sha="new456",
+                base_sha="base123",
+                state="open",
+                title="Add API",
+            )
+            upload = Upload(
+                repository_id=repository.id,
+                commit_id=commit.id,
+                format="lcov",
+                storage_path=str(Path(self.tmpdir.name) / "lcov.info"),
+                status="processed",
+            )
+            session.add_all([pull, upload])
+            session.flush()
+            session.add(
+                CoverageReportRow(
+                    repository_id=repository.id,
+                    commit_id=commit.id,
+                    upload_id=upload.id,
+                    line_rate=1.0,
+                    covered_lines=1,
+                    total_lines=1,
+                )
+            )
+            session.flush()
+
+            fake = FakeInstallationClient()
+            fake.pull_payload = {
+                "number": 7,
+                "head": {"sha": "new456", "ref": "feature"},
+                "base": {"sha": "base123", "ref": "main"},
+                "state": "open",
+                "title": "Add API",
+            }
+            asyncio.run(update_github_pending_coverage(session, self.settings, fake, pull))
+
+        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.comments, [])
 
 
 if __name__ == "__main__":
