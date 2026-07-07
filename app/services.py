@@ -19,6 +19,7 @@ from app.models import (
     Job,
     LineCoverage,
     PrAnnotation,
+    PrFileAnnotation,
     PullRequest,
     Repository,
     Upload,
@@ -445,30 +446,7 @@ def render_pr_comment(
         "",
     ]
     if result.files:
-        lines.extend(
-            [
-                "### Changed files",
-                "",
-                "| File | Covered | Coverage |",
-                "| --- | ---: | ---: |",
-            ]
-        )
-        for file_result in result.files[:10]:
-            lines.append(
-                "| %s | %s | %s |"
-                % (
-                    file_result.path,
-                    covered_count(
-                        file_result.patch_covered_lines,
-                        file_result.patch_total_lines,
-                    ),
-                    coverage_percent(
-                        file_result.patch_covered_lines,
-                        file_result.patch_total_lines,
-                    ),
-                )
-            )
-        lines.append("")
+        lines.extend(["[Changed file coverage](%s/files)" % url, ""])
     if result.patch_total_lines == 0:
         lines.extend(["No coverable changed lines found.", ""])
     if result.warnings:
@@ -582,6 +560,17 @@ async def update_github_pr(
     annotation.patch_line_rate = result.patch_line_rate
     annotation.github_comment_id = comment_id
     annotation.status = state
+    session.flush()
+    session.query(PrFileAnnotation).filter(PrFileAnnotation.annotation_id == annotation.id).delete()
+    for file_result in result.files:
+        session.add(
+            PrFileAnnotation(
+                annotation_id=annotation.id,
+                path=file_result.path,
+                patch_covered_lines=file_result.patch_covered_lines,
+                patch_total_lines=file_result.patch_total_lines,
+            )
+        )
     return annotation
 
 

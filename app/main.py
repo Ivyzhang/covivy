@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.models import Commit, CoverageReportRow, PrAnnotation, PullRequest, Repository
+from app.models import Commit, CoverageReportRow, PrAnnotation, PrFileAnnotation, PullRequest, Repository
 from app.security import verify_github_signature
 from app.services import (
     create_upload,
@@ -376,7 +376,11 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
             "<tr><td>Covered changed lines</td><td>{patch_lines}</td><td>{patch}</td></tr>"
             "<tr><td>Project coverage</td><td>{project_lines}</td><td>{project}</td></tr>"
             "<tr><td>Status</td><td colspan=\"2\">{status}</td></tr></table>"
+            '<p><a href="/repos/{owner}/{repo}/pulls/{number}/files">Changed file coverage</a></p>'
         ).format(
+            owner=owner,
+            repo=repo,
+            number=number,
             patch=percent(annotation.patch_line_rate),
             patch_lines="%s / %s" % (annotation.patch_covered_lines, annotation.patch_total_lines),
             project=percent(report.line_rate),
@@ -401,4 +405,53 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
             coverage=coverage_html,
             patch=patch_html,
         )
+    )
+
+
+@app.get("/repos/{owner}/{repo}/pulls/{number}/files", response_class=HTMLResponse)
+def pull_file_dashboard(owner: str, repo: str, number: int, session: Session = Depends(get_session)):
+    repository = session.scalar(
+        select(Repository).where(Repository.owner == owner, Repository.name == repo)
+    )
+    if repository is None:
+        raise HTTPException(status_code=404, detail="repository not found")
+    pull = session.scalar(
+        select(PullRequest).where(
+            PullRequest.repository_id == repository.id,
+            PullRequest.github_pr_number == number,
+        )
+    )
+    if pull is None:
+        raise HTTPException(status_code=404, detail="pull request not found")
+    report = latest_report_for_commit(session, repository.id, pull.head_sha)
+    annotation = None
+    if report is not None:
+        annotation = session.scalar(
+            select(PrAnnotation)
+            .where(PrAnnotation.pull_request_id == pull.id, PrAnnotation.report_id == report.id)
+            .order_by(PrAnnotation.updated_at.desc())
+            .limit(1)
+        )
+    rows = ""
+    if annotation is not None:
+        file_rows = session.scalars(
+            select(PrFileAnnotation)
+            .where(PrFileAnnotation.annotation_id == annotation.id)
+            .order_by(PrFileAnnotation.path)
+        ).all()
+        rows = "\n".join(
+            "<tr><td>{path}</td><td>{lines}</td><td>{coverage}</td></tr>".format(
+                path=file.path,
+                lines="%s / %s" % (file.patch_covered_lines, file.patch_total_lines),
+                coverage=percent(file.patch_line_rate),
+            )
+            for file in file_rows
+        )
+    if not rows:
+        rows = '<tr><td colspan="3">No changed file coverage available.</td></tr>'
+    return HTMLResponse(
+        "<html><body><h1>Changed file coverage for PR #{number}</h1>"
+        '<p><a href="/repos/{owner}/{repo}/pulls/{number}">Back to PR coverage</a></p>'
+        "<table><tr><th>File</th><th>Covered</th><th>Coverage</th></tr>{rows}</table>"
+        "</body></html>".format(owner=owner, repo=repo, number=number, rows=rows)
     )

@@ -165,6 +165,23 @@ class PrAnnotation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
 
 
+class PrFileAnnotation(Base):
+    __tablename__ = "pr_file_annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    annotation_id: Mapped[int] = mapped_column(ForeignKey("pr_annotations.id"), nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    patch_covered_lines: Mapped[int] = mapped_column(Integer, nullable=False)
+    patch_total_lines: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+    @property
+    def patch_line_rate(self) -> float:
+        if self.patch_total_lines == 0:
+            return 1.0
+        return self.patch_covered_lines / self.patch_total_lines
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

@@ -17,6 +17,7 @@ from app.models import (
     Job,
     LineCoverage,
     PrAnnotation,
+    PrFileAnnotation,
     PullRequest,
     Repository,
     Upload,
@@ -369,14 +370,22 @@ class ApiTests(unittest.TestCase):
             report.files.append(file_row)
             session.add(report)
             session.flush()
+            annotation = PrAnnotation(
+                pull_request_id=pull.id,
+                report_id=report.id,
+                patch_covered_lines=1,
+                patch_total_lines=2,
+                patch_line_rate=0.5,
+                status="failure",
+            )
+            session.add(annotation)
+            session.flush()
             session.add(
-                PrAnnotation(
-                    pull_request_id=pull.id,
-                    report_id=report.id,
+                PrFileAnnotation(
+                    annotation_id=annotation.id,
+                    path="src/api.py",
                     patch_covered_lines=1,
                     patch_total_lines=2,
-                    patch_line_rate=0.5,
-                    status="failure",
                 )
             )
             session.commit()
@@ -402,7 +411,15 @@ class ApiTests(unittest.TestCase):
         self.assertIn("<th>Metric</th><th>Covered</th><th>Coverage</th>", pull_response.text)
         self.assertIn("<td>Covered changed lines</td><td>1 / 2</td><td>50.00%</td>", pull_response.text)
         self.assertIn("<td>Project coverage</td><td>1 / 2</td><td>50.00%</td>", pull_response.text)
+        self.assertIn("Changed file coverage", pull_response.text)
+        self.assertIn("/repos/octo/demo/pulls/7/files", pull_response.text)
+        self.assertNotIn("src/api.py</td>", pull_response.text)
         self.assertIn("50.00%", pull_response.text)
+
+        files_response = self.client.get("/repos/octo/demo/pulls/7/files")
+        self.assertEqual(files_response.status_code, 200)
+        self.assertIn("Changed file coverage", files_response.text)
+        self.assertIn("<td>src/api.py</td><td>1 / 2</td><td>50.00%</td>", files_response.text)
 
 
 if __name__ == "__main__":
