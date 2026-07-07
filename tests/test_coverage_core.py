@@ -6,6 +6,7 @@ from app.coverage import (
     format_coverage,
     parse_cobertura,
     parse_lcov,
+    parse_unified_diff_changed_line_contents,
     parse_unified_diff_changed_lines,
 )
 from app.security import hash_upload_token, verify_github_signature, verify_upload_token
@@ -71,6 +72,25 @@ end_of_record
 """
 
         self.assertEqual(parse_unified_diff_changed_lines(patch), {21, 22, 42})
+
+    def test_parse_unified_diff_records_changed_line_contents(self):
+        patch = """@@ -10,2 +10,4 @@
++base_report = (
++    latest_report_for_commit(session, repository.id, pull_request.base_sha)
++
++)
+ context
+"""
+
+        self.assertEqual(
+            parse_unified_diff_changed_line_contents(patch),
+            {
+                10: "base_report = (",
+                11: "    latest_report_for_commit(session, repository.id, pull_request.base_sha)",
+                12: "",
+                13: ")",
+            },
+        )
 
     def test_compute_patch_coverage_counts_changed_lines_missing_from_report_as_uncovered(self):
         report = parse_lcov(
@@ -158,6 +178,153 @@ end_of_record
         self.assertEqual(
             [(item.path, item.patch_covered_lines, item.patch_total_lines) for item in result.files],
             [("app/main.py", 0, 5)],
+        )
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(386, False), (387, False), (388, False), (389, False), (395, False)],
+        )
+
+    def test_compute_patch_coverage_ignores_test_files_and_blank_changed_lines(self):
+        report = parse_lcov(
+            b"""SF:app/main.py
+DA:10,1
+end_of_record
+SF:tests/test_main.py
+DA:5,0
+end_of_record
+"""
+        )
+
+        result = compute_patch_coverage(
+            report,
+            {"app/main.py": {10, 11}, "tests/test_main.py": {5}},
+            {
+                "app/main.py": {10: "value = 1", 11: ""},
+                "tests/test_main.py": {5: "def test_value(): pass"},
+            },
+        )
+
+        self.assertEqual(result.patch_covered_lines, 1)
+        self.assertEqual(result.patch_total_lines, 1)
+        self.assertEqual(
+            [(item.path, item.patch_covered_lines, item.patch_total_lines) for item in result.files],
+            [("app/main.py", 1, 1)],
+        )
+        self.assertEqual([(line.number, line.covered) for line in result.files[0].lines], [(10, True)])
+
+    def test_compute_patch_coverage_treats_multiline_python_statement_as_covered_unit(self):
+        report = parse_lcov(
+            b"""SF:app/services.py
+DA:558,1
+end_of_record
+"""
+        )
+
+        result = compute_patch_coverage(
+            report,
+            {"app/services.py": {558, 559, 560, 561, 562}},
+            {
+                "app/services.py": {
+                    558: "base_report = (",
+                    559: "    latest_report_for_commit(session, repository.id, pull_request.base_sha)",
+                    560: "    if pull_request.base_sha",
+                    561: "    else None",
+                    562: ")",
+                }
+            },
+        )
+
+        self.assertEqual(result.patch_covered_lines, 5)
+        self.assertEqual(result.patch_total_lines, 5)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(558, True), (559, True), (560, True), (561, True), (562, True)],
+        )
+
+    def test_compute_patch_coverage_recovers_multiline_call_inside_partial_changed_block(self):
+        report = parse_lcov(
+            b"""SF:app/main.py
+DA:473,1
+DA:474,1
+DA:475,1
+DA:480,1
+DA:481,1
+DA:482,1
+end_of_record
+"""
+        )
+        contents = {
+            473: "        row_parts = []",
+            474: "        for file in file_rows:",
+            475: "            line_rows = session.scalars(",
+            476: "                select(PrFileLineAnnotation)",
+            477: "                .where(PrFileLineAnnotation.file_annotation_id == file.id)",
+            478: "                .order_by(PrFileLineAnnotation.line_number)",
+            479: "            ).all()",
+            480: '            covered_lines = ", ".join(str(line.line_number) for line in line_rows if line.covered)',
+            481: '            missing_lines = ", ".join(str(line.line_number) for line in line_rows if not line.covered)',
+            482: "            row_parts.append(",
+            483: '                "<tr><td>{path}</td><td>{lines}</td><td>{coverage}</td>"',
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"app/main.py": set(contents)},
+            {"app/main.py": contents},
+        )
+
+        covered_by_line = {line.number: line.covered for line in result.files[0].lines}
+        self.assertEqual(
+            [(line, covered_by_line[line]) for line in [475, 476, 477, 478, 479]],
+            [(475, True), (476, True), (477, True), (478, True), (479, True)],
+        )
+
+    def test_compute_patch_coverage_uses_full_python_source_for_partial_statement_changes(self):
+        report = parse_lcov(
+            b"""SF:app/services.py
+DA:2,1
+DA:9,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "def render():",
+                "    lines = [",
+                '        "| Covered changed lines | %s | %s |"',
+                "        % (",
+                "            covered_count(result.patch_covered_lines, result.patch_total_lines),",
+                "            coverage_percent(result.patch_covered_lines, result.patch_total_lines) + patch_suffix,",
+                "        ),",
+                "    ]",
+                "    file_annotation = PrFileAnnotation(",
+                "        annotation_id=annotation.id,",
+                "        path=file_result.path,",
+                "        patch_covered_lines=file_result.patch_covered_lines,",
+                "        patch_total_lines=file_result.patch_total_lines,",
+                "    )",
+            ]
+        )
+        changed_contents = {
+            6: "            coverage_percent(result.patch_covered_lines, result.patch_total_lines) + patch_suffix,",
+            10: "        annotation_id=annotation.id,",
+            11: "        path=file_result.path,",
+            12: "        patch_covered_lines=file_result.patch_covered_lines,",
+            13: "        patch_total_lines=file_result.patch_total_lines,",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"app/services.py": set(changed_contents)},
+            {"app/services.py": changed_contents},
+            {"app/services.py": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 5)
+        self.assertEqual(result.patch_total_lines, 5)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(6, True), (10, True), (11, True), (12, True), (13, True)],
         )
 
     def test_security_helpers_hash_tokens_and_verify_github_signature(self):

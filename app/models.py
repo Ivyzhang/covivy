@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -180,6 +181,19 @@ class PrFileAnnotation(Base):
         if self.patch_total_lines == 0:
             return 1.0
         return self.patch_covered_lines / self.patch_total_lines
+
+
+class PrFileLineAnnotation(Base):
+    __tablename__ = "pr_file_line_annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    file_annotation_id: Mapped[int] = mapped_column(
+        ForeignKey("pr_file_annotations.id"), nullable=False
+    )
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    covered: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    line_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
 
 
 class Job(Base):

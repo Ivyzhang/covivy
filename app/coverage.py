@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import ast
 import re
+import textwrap
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
 @dataclass(frozen=True)
@@ -53,10 +55,17 @@ class CoverageReport:
 
 
 @dataclass(frozen=True)
+class PatchLineCoverage:
+    number: int
+    covered: bool
+
+
+@dataclass(frozen=True)
 class PatchFileCoverage:
     path: str
     patch_covered_lines: int
     patch_total_lines: int
+    lines: List[PatchLineCoverage] = field(default_factory=list)
 
     @property
     def patch_line_rate(self) -> float:
@@ -218,8 +227,138 @@ def parse_unified_diff_changed_lines(patch: str) -> Set[int]:
     return changed
 
 
+def parse_unified_diff_changed_line_contents(patch: str) -> Dict[int, str]:
+    contents: Dict[int, str] = {}
+    old_line: Optional[int] = None
+    new_line: Optional[int] = None
+    for raw_line in patch.splitlines():
+        match = _HUNK_RE.match(raw_line)
+        if match:
+            old_line = int(match.group("old"))
+            new_line = int(match.group("new"))
+            continue
+        if old_line is None or new_line is None:
+            continue
+        if raw_line.startswith("+") and not raw_line.startswith("+++"):
+            contents[new_line] = raw_line[1:]
+            new_line += 1
+        elif raw_line.startswith("-") and not raw_line.startswith("---"):
+            old_line += 1
+        else:
+            old_line += 1
+            new_line += 1
+    return contents
+
+
+def is_test_path(path: str) -> bool:
+    normalized = normalize_path(path)
+    parts = normalized.split("/")
+    filename = parts[-1] if parts else normalized
+    return (
+        "tests" in parts
+        or filename.startswith("test_")
+        or filename.endswith("_test.py")
+        or filename.endswith("_tests.py")
+    )
+
+
+def cover_multiline_python_statements(
+    path: str,
+    changed_line_contents: Dict[int, str],
+    exactly_covered_lines: Set[int],
+) -> Set[int]:
+    if not path.endswith(".py") or not changed_line_contents:
+        return set()
+    covered: Set[int] = set()
+
+    def covered_statement_lines(line_numbers: List[int]) -> Set[int]:
+        source = "\n".join(changed_line_contents[number] for number in line_numbers)
+        try:
+            tree = ast.parse(textwrap.dedent(source))
+        except SyntaxError:
+            return set()
+        first_line = line_numbers[0]
+        changed_lines = set(line_numbers)
+        statement_covered: Set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.stmt) or not hasattr(node, "lineno"):
+                continue
+            start = first_line + node.lineno - 1
+            end = first_line + getattr(node, "end_lineno", node.lineno) - 1
+            statement_lines = set(range(start, end + 1)) & changed_lines
+            if statement_lines & exactly_covered_lines:
+                statement_covered.update(statement_lines)
+        return statement_covered
+
+    current_group: List[int] = []
+    groups: List[List[int]] = []
+    for line_number in sorted(changed_line_contents):
+        if current_group and line_number != current_group[-1] + 1:
+            groups.append(current_group)
+            current_group = []
+        current_group.append(line_number)
+    if current_group:
+        groups.append(current_group)
+    for line_numbers in groups:
+        group_covered = covered_statement_lines(line_numbers)
+        if group_covered:
+            covered.update(group_covered)
+            continue
+        for index, line_number in enumerate(line_numbers):
+            if line_number not in exactly_covered_lines:
+                continue
+            for end_index in range(index, len(line_numbers)):
+                window_covered = covered_statement_lines(line_numbers[index : end_index + 1])
+                if window_covered:
+                    covered.update(window_covered)
+                    break
+    return covered
+
+
+def python_statement_coverage_from_source(
+    path: str,
+    source: str,
+    changed_lines: Set[int],
+    hits_by_line: Dict[int, int],
+) -> Dict[int, bool]:
+    if not path.endswith(".py") or not source:
+        return {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+
+    spans: List[Tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt) or not hasattr(node, "lineno"):
+            continue
+        start = node.lineno
+        end = getattr(node, "end_lineno", node.lineno)
+        spans.append((start, end))
+
+    decisions: Dict[int, bool] = {}
+    for line_number in changed_lines:
+        containing_spans = [
+            span for span in spans if span[0] <= line_number <= span[1]
+        ]
+        if not containing_spans:
+            continue
+        start, end = min(containing_spans, key=lambda span: (span[1] - span[0], span[0]))
+        statement_hits = [
+            hits
+            for statement_line, hits in hits_by_line.items()
+            if start <= statement_line <= end
+        ]
+        if statement_hits:
+            decisions[line_number] = any(hits > 0 for hits in statement_hits)
+    return decisions
+
+
 def compute_patch_coverage(
-    report: CoverageReport, changed_lines_by_file: Dict[str, Set[int]]
+    report: CoverageReport,
+    changed_lines_by_file: Dict[str, Set[int]],
+    changed_line_contents_by_file: Optional[Dict[str, Dict[int, str]]] = None,
+    source_by_file: Optional[Dict[str, str]] = None,
 ) -> PatchCoverageResult:
     covered = 0
     total = 0
@@ -228,8 +367,21 @@ def compute_patch_coverage(
     warnings: List[str] = []
     coverage_by_file = {normalize_path(file.path): file for file in report.files}
     normalized_paths = list(coverage_by_file)
+    changed_line_contents_by_file = changed_line_contents_by_file or {}
+    source_by_file = source_by_file or {}
     for path, changed_lines in changed_lines_by_file.items():
         normalized_path = normalize_path(path)
+        if is_test_path(normalized_path):
+            continue
+        line_contents = changed_line_contents_by_file.get(path) or changed_line_contents_by_file.get(normalized_path) or {}
+        source = source_by_file.get(path) or source_by_file.get(normalized_path) or ""
+        coverable_changed_lines = set(changed_lines)
+        if line_contents:
+            coverable_changed_lines = {
+                line_number
+                for line_number in changed_lines
+                if line_contents.get(line_number, "").strip()
+            }
         covered_file = coverage_by_file.get(normalized_path)
         if covered_file is None:
             suffix_matches = [
@@ -242,17 +394,42 @@ def compute_patch_coverage(
                 warnings.append("%s matched multiple coverage files" % path)
                 continue
         if covered_file is None:
-            if changed_lines:
+            if coverable_changed_lines:
                 unmatched_files.append(path)
                 warnings.append("%s did not match any coverage file" % path)
             continue
         hits_by_line = {line.number: line.hits for line in covered_file.lines}
+        exactly_covered_lines = {
+            line_number
+            for line_number in coverable_changed_lines
+            if hits_by_line.get(line_number, 0) > 0
+        }
+        source_line_decisions = python_statement_coverage_from_source(
+            normalized_path,
+            source,
+            coverable_changed_lines,
+            hits_by_line,
+        )
+        if source_line_decisions:
+            coverable_changed_lines = set(source_line_decisions) | exactly_covered_lines
+        inferred_covered_lines = cover_multiline_python_statements(
+            normalized_path,
+            {line: line_contents[line] for line in coverable_changed_lines if line in line_contents},
+            exactly_covered_lines,
+        )
         file_covered = 0
         file_total = 0
-        for line_number in changed_lines:
+        line_results: List[PatchLineCoverage] = []
+        for line_number in sorted(coverable_changed_lines):
             file_total += 1
-            if hits_by_line.get(line_number, 0) > 0:
+            line_covered = (
+                source_line_decisions.get(line_number, False)
+                or line_number in exactly_covered_lines
+                or line_number in inferred_covered_lines
+            )
+            if line_covered:
                 file_covered += 1
+            line_results.append(PatchLineCoverage(number=line_number, covered=line_covered))
         covered += file_covered
         total += file_total
         file_results.append(
@@ -260,6 +437,7 @@ def compute_patch_coverage(
                 path=path,
                 patch_covered_lines=file_covered,
                 patch_total_lines=file_total,
+                lines=line_results,
             )
         )
     return PatchCoverageResult(
