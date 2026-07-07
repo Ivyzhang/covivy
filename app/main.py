@@ -385,13 +385,17 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
         )
     return HTMLResponse(
         "<html><body><h1>PR #{number}: {title}</h1>"
-        "<p>State: {state}</p><p>Head: {head}</p><p>Base: {base}</p>"
+        "<p>State: {state}</p>"
+        "<p>Coverage report commit: <code>{report_commit}</code></p>"
+        "<p>Base commit: <code>{base}</code></p>"
+        "<p>PR head commit: <code>{head}</code></p>"
         "<h2>Coverage</h2>{coverage}"
         "<h2>Patch</h2>{patch}"
         "</body></html>".format(
             number=pull.github_pr_number,
             title=pull.title or "",
             state=pull.state,
+            report_commit=pull.head_sha if report is not None else "No report for current head",
             head=pull.head_sha,
             base=pull.base_sha or "",
             coverage=coverage_html,
