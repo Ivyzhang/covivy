@@ -42,6 +42,7 @@ class ApiTests(unittest.TestCase):
             upload_token_pepper="pepper",
             github_webhook_secret="secret",
             admin_token="admin-secret",
+            github_commit_status_enabled=True,
             patch_coverage_minimum=0.8,
         )
 

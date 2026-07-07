@@ -72,7 +72,7 @@ end_of_record
 
         self.assertEqual(parse_unified_diff_changed_lines(patch), {21, 22, 42})
 
-    def test_compute_patch_coverage_ignores_non_coverable_changed_lines(self):
+    def test_compute_patch_coverage_counts_changed_lines_missing_from_report_as_uncovered(self):
         report = parse_lcov(
             b"""SF:src/api.py
 DA:10,1
@@ -84,9 +84,9 @@ end_of_record
 
         result = compute_patch_coverage(report, {"src/api.py": {10, 11, 12, 13}})
 
-        self.assertEqual(result.patch_total_lines, 3)
+        self.assertEqual(result.patch_total_lines, 4)
         self.assertEqual(result.patch_covered_lines, 2)
-        self.assertAlmostEqual(result.patch_line_rate, 2 / 3)
+        self.assertAlmostEqual(result.patch_line_rate, 2 / 4)
         self.assertEqual(result.status_for_target(0.8), "failure")
 
     def test_compute_patch_coverage_records_file_results_and_unmatched_warnings(self):
@@ -112,10 +112,10 @@ end_of_record
         )
 
         self.assertEqual(result.patch_covered_lines, 2)
-        self.assertEqual(result.patch_total_lines, 3)
+        self.assertEqual(result.patch_total_lines, 4)
         self.assertEqual(
             [(item.path, item.patch_covered_lines, item.patch_total_lines) for item in result.files],
-            [("app/api.py", 2, 3), ("app/jobs.py", 0, 0)],
+            [("app/api.py", 2, 4), ("app/jobs.py", 0, 0)],
         )
         self.assertEqual(result.unmatched_files, ["docs/readme.md"])
         self.assertIn("docs/readme.md did not match any coverage file", result.warnings[0])
@@ -140,6 +140,25 @@ end_of_record
         self.assertEqual(result.patch_total_lines, 0)
         self.assertEqual(result.unmatched_files, ["app/api.py"])
         self.assertEqual(result.warnings, ["app/api.py matched multiple coverage files"])
+
+    def test_compute_patch_coverage_counts_changed_source_lines_missing_from_report_as_uncovered(self):
+        report = parse_lcov(
+            b"""SF:app/main.py
+DA:100,1
+DA:101,1
+end_of_record
+"""
+        )
+
+        result = compute_patch_coverage(report, {"app/main.py": {386, 387, 388, 389, 395}})
+
+        self.assertEqual(result.patch_covered_lines, 0)
+        self.assertEqual(result.patch_total_lines, 5)
+        self.assertEqual(result.patch_line_rate, 0.0)
+        self.assertEqual(
+            [(item.path, item.patch_covered_lines, item.patch_total_lines) for item in result.files],
+            [("app/main.py", 0, 5)],
+        )
 
     def test_security_helpers_hash_tokens_and_verify_github_signature(self):
         token_hash = hash_upload_token("cov_secret", "pepper")
