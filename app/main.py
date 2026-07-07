@@ -223,6 +223,8 @@ async def github_webhook(
         report = latest_report_for_commit(session, repository.id, pull.head_sha)
         if report is not None:
             enqueue_job(session, "update_github_pr", {"pull_request_id": pull.id, "report_id": report.id})
+        elif pull.state == "open":
+            enqueue_job(session, "update_github_pending", {"pull_request_id": pull.id})
     elif event == "push":
         repo_data = payload["repository"]
         owner, name = repo_data["full_name"].split("/", 1)
