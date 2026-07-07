@@ -3,6 +3,7 @@ import unittest
 
 from app.coverage import (
     compute_patch_coverage,
+    format_coverage,
     parse_cobertura,
     parse_lcov,
     parse_unified_diff_changed_lines,
@@ -87,6 +88,58 @@ end_of_record
         self.assertEqual(result.patch_covered_lines, 2)
         self.assertAlmostEqual(result.patch_line_rate, 2 / 3)
         self.assertEqual(result.status_for_target(0.8), "failure")
+
+    def test_compute_patch_coverage_records_file_results_and_unmatched_warnings(self):
+        report = parse_lcov(
+            b"""SF:/home/runner/work/covivy/covivy/app/api.py
+DA:10,1
+DA:11,0
+DA:13,1
+end_of_record
+SF:app/jobs.py
+DA:5,1
+end_of_record
+"""
+        )
+
+        result = compute_patch_coverage(
+            report,
+            {
+                "app/api.py": {10, 11, 12, 13},
+                "docs/readme.md": {1, 2},
+                "app/jobs.py": set(),
+            },
+        )
+
+        self.assertEqual(result.patch_covered_lines, 2)
+        self.assertEqual(result.patch_total_lines, 3)
+        self.assertEqual(
+            [(item.path, item.patch_covered_lines, item.patch_total_lines) for item in result.files],
+            [("app/api.py", 2, 3), ("app/jobs.py", 0, 0)],
+        )
+        self.assertEqual(result.unmatched_files, ["docs/readme.md"])
+        self.assertIn("docs/readme.md did not match any coverage file", result.warnings[0])
+
+    def test_format_coverage_uses_consistent_ratio_and_percent(self):
+        self.assertEqual(format_coverage(0, 0), "0 / 0, (100.00%)")
+        self.assertEqual(format_coverage(14, 17), "14 / 17, (82.35%)")
+
+    def test_compute_patch_coverage_warns_on_ambiguous_suffix_match(self):
+        report = parse_lcov(
+            b"""SF:pkg_a/app/api.py
+DA:1,1
+end_of_record
+SF:pkg_b/app/api.py
+DA:1,1
+end_of_record
+"""
+        )
+
+        result = compute_patch_coverage(report, {"app/api.py": {1}})
+
+        self.assertEqual(result.patch_total_lines, 0)
+        self.assertEqual(result.unmatched_files, ["app/api.py"])
+        self.assertEqual(result.warnings, ["app/api.py matched multiple coverage files"])
 
     def test_security_helpers_hash_tokens_and_verify_github_signature(self):
         token_hash = hash_upload_token("cov_secret", "pepper")

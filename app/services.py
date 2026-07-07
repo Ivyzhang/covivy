@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.coverage import CoverageReport, compute_patch_coverage, parse_report
+from app.coverage import CoverageReport, compute_patch_coverage, format_coverage, parse_report
 from app.github import InstallationGitHubClient, changed_lines_from_pull_files
 from app.models import (
     Account,
@@ -409,26 +409,56 @@ def load_report_shape(report_row: CoverageReportRow) -> CoverageReport:
     return CoverageReport(files=files)
 
 
-def render_pr_comment(result, project_rate: float, target: float, url: str) -> str:
+def render_pr_comment(
+    result,
+    project_covered_lines: int,
+    project_total_lines: int,
+    target: float,
+    url: str,
+) -> str:
     status = "passed" if result.patch_line_rate >= target else "failed"
-    return "\n".join(
+    lines = [
+        "<!-- coverage-service:pr-comment -->",
+        "",
+        "## Coverage Report",
+        "",
+        "| Metric | Coverage |",
+        "| --- | ---: |",
+        "| Patch coverage | %s |"
+        % format_coverage(result.patch_covered_lines, result.patch_total_lines),
+        "| Project coverage | %s |"
+        % format_coverage(project_covered_lines, project_total_lines),
+        "",
+    ]
+    if result.files:
+        lines.extend(["### Changed files", "", "| File | Patch coverage |", "| --- | ---: |"])
+        for file_result in result.files[:10]:
+            lines.append(
+                "| %s | %s |"
+                % (
+                    file_result.path,
+                    format_coverage(
+                        file_result.patch_covered_lines,
+                        file_result.patch_total_lines,
+                    ),
+                )
+            )
+        lines.append("")
+    if result.patch_total_lines == 0:
+        lines.extend(["No coverable changed lines found.", ""])
+    if result.warnings:
+        lines.extend(["### Warnings", ""])
+        for warning in result.warnings[:10]:
+            lines.append("- %s" % warning)
+        lines.append("")
+    lines.extend(
         [
-            "<!-- coverage-service:pr-comment -->",
-            "",
-            "## Coverage Report",
-            "",
-            "| Metric | Result |",
-            "| --- | ---: |",
-            "| Patch coverage | %.2f%% |" % (result.patch_line_rate * 100),
-            "| Covered changed lines | %s / %s |"
-            % (result.patch_covered_lines, result.patch_total_lines),
-            "| Project coverage | %.2f%% |" % (project_rate * 100),
-            "",
             "Status: %s. Patch coverage target is %.2f%%." % (status, target * 100),
             "",
             "[View full report](%s)" % url,
         ]
     )
+    return "\n".join(lines)
 
 
 def render_failure_pr_comment(message: str, url: str) -> str:
@@ -490,7 +520,11 @@ async def update_github_pr(
         .limit(1)
     )
     body = render_pr_comment(
-        result, report_row.line_rate, settings.patch_coverage_minimum, target_url
+        result,
+        report_row.covered_lines,
+        report_row.total_lines,
+        settings.patch_coverage_minimum,
+        target_url,
     )
     comment_id = await installation_client.upsert_pr_comment(
         repository.owner,
