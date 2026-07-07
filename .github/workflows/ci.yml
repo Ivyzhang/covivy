@@ -40,7 +40,7 @@ jobs:
           python -m coverage xml -o coverage.xml
 
       - name: Upload coverage to covivy
-        if: github.event_name == 'pull_request' && env.COVIVY_UPLOAD_TOKEN != '' && env.COVIVY_BASE_URL != ''
+        if: (github.event_name == 'pull_request' || github.event_name == 'push') && env.COVIVY_UPLOAD_TOKEN != '' && env.COVIVY_BASE_URL != ''
         uses: ./upload-action
         with:
           token: ${{ env.COVIVY_UPLOAD_TOKEN }}

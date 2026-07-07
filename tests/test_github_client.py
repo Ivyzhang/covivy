@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import unittest
 from unittest.mock import patch
 
@@ -74,6 +75,33 @@ class GitHubClientTests(unittest.TestCase):
         self.assertEqual([item.filename for item in files], ["a.py", "b.py"])
         self.assertEqual(FakeAsyncClient.calls[0][2], {"per_page": 100})
         self.assertEqual(FakeAsyncClient.calls[1][1], "https://api.github.com/page/2")
+
+    def test_file_content_decodes_base64_blob_at_ref(self):
+        FakeAsyncClient.queued_responses = [
+            FakeResponse(
+                {
+                    "encoding": "base64",
+                    "content": base64.b64encode(b"print('ok')\n").decode("ascii"),
+                }
+            )
+        ]
+
+        with patch("app.github.httpx.AsyncClient", FakeAsyncClient):
+            content = asyncio.run(
+                InstallationGitHubClient("token").file_content(
+                    "octo", "demo", "src/api.py", "abc123"
+                )
+            )
+
+        self.assertEqual(content, "print('ok')\n")
+        self.assertEqual(
+            FakeAsyncClient.calls[0],
+            (
+                "GET",
+                "https://api.github.com/repos/octo/demo/contents/src/api.py",
+                {"ref": "abc123"},
+            ),
+        )
 
     def test_upsert_pr_comment_reuses_marker_found_on_second_page(self):
         FakeAsyncClient.queued_responses = [

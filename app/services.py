@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.coverage import CoverageReport, compute_patch_coverage, parse_report
-from app.github import InstallationGitHubClient, changed_lines_from_pull_files
+from app.github import (
+    InstallationGitHubClient,
+    changed_line_contents_from_pull_files,
+    changed_lines_from_pull_files,
+)
 from app.models import (
     Account,
     Commit,
@@ -20,6 +24,7 @@ from app.models import (
     LineCoverage,
     PrAnnotation,
     PrFileAnnotation,
+    PrFileLineAnnotation,
     PullRequest,
     Repository,
     Upload,
@@ -416,6 +421,7 @@ def render_pr_comment(
     project_total_lines: int,
     target: float,
     url: str,
+    base_project_line_rate: Optional[float] = None,
 ) -> str:
     status = "passed" if result.patch_line_rate >= target else "failed"
 
@@ -425,6 +431,22 @@ def render_pr_comment(
 
     def covered_count(covered: int, total: int) -> str:
         return "%s / %s" % (covered, total)
+
+    def status_symbol(passed: bool) -> str:
+        return "✅" if passed else "❌"
+
+    def trend_symbol(current_rate: float, base_rate: Optional[float]) -> str:
+        if base_rate is None:
+            return ""
+        if current_rate > base_rate:
+            return " 🟢 ↑"
+        if current_rate < base_rate:
+            return " 🔴 ↓"
+        return " ➖"
+
+    project_line_rate = 1.0 if project_total_lines == 0 else project_covered_lines / project_total_lines
+    patch_suffix = " " + status_symbol(result.patch_line_rate >= target)
+    project_suffix = trend_symbol(project_line_rate, base_project_line_rate)
 
     lines = [
         "<!-- coverage-service:pr-comment -->",
@@ -436,12 +458,12 @@ def render_pr_comment(
         "| Covered changed lines | %s | %s |"
         % (
             covered_count(result.patch_covered_lines, result.patch_total_lines),
-            coverage_percent(result.patch_covered_lines, result.patch_total_lines),
+            coverage_percent(result.patch_covered_lines, result.patch_total_lines) + patch_suffix,
         ),
         "| Project coverage | %s | %s |"
         % (
             covered_count(project_covered_lines, project_total_lines),
-            coverage_percent(project_covered_lines, project_total_lines),
+            coverage_percent(project_covered_lines, project_total_lines) + project_suffix,
         ),
         "",
     ]
@@ -512,7 +534,23 @@ async def update_github_pr(
         repository.owner, repository.name, pull_request.github_pr_number
     )
     changed = changed_lines_from_pull_files(files)
-    result = compute_patch_coverage(load_report_shape(report_row), changed)
+    changed_line_contents = changed_line_contents_from_pull_files(files)
+    source_by_file = {}
+    for file in files:
+        content = await installation_client.file_content(
+            repository.owner,
+            repository.name,
+            file.filename,
+            pull_request.head_sha,
+        )
+        if content is not None:
+            source_by_file[file.filename] = content
+    result = compute_patch_coverage(
+        load_report_shape(report_row),
+        changed,
+        changed_line_contents,
+        source_by_file,
+    )
     target_url = "%s/repos/%s/%s/pulls/%s" % (
         settings.public_base_url.rstrip("/"),
         repository.owner,
@@ -537,12 +575,18 @@ async def update_github_pr(
         .order_by(PrAnnotation.updated_at.desc())
         .limit(1)
     )
+    base_report = (
+        latest_report_for_commit(session, repository.id, pull_request.base_sha)
+        if pull_request.base_sha
+        else None
+    )
     body = render_pr_comment(
         result,
         report_row.covered_lines,
         report_row.total_lines,
         settings.patch_coverage_minimum,
         target_url,
+        base_report.line_rate if base_report else None,
     )
     comment_id = await installation_client.upsert_pr_comment(
         repository.owner,
@@ -561,16 +605,37 @@ async def update_github_pr(
     annotation.github_comment_id = comment_id
     annotation.status = state
     session.flush()
+    old_file_ids = [
+        item.id
+        for item in session.scalars(
+            select(PrFileAnnotation).where(PrFileAnnotation.annotation_id == annotation.id)
+        ).all()
+    ]
+    if old_file_ids:
+        session.query(PrFileLineAnnotation).filter(
+            PrFileLineAnnotation.file_annotation_id.in_(old_file_ids)
+        ).delete(synchronize_session=False)
     session.query(PrFileAnnotation).filter(PrFileAnnotation.annotation_id == annotation.id).delete()
     for file_result in result.files:
-        session.add(
-            PrFileAnnotation(
-                annotation_id=annotation.id,
-                path=file_result.path,
-                patch_covered_lines=file_result.patch_covered_lines,
-                patch_total_lines=file_result.patch_total_lines,
-            )
+        file_annotation = PrFileAnnotation(
+            annotation_id=annotation.id,
+            path=file_result.path,
+            patch_covered_lines=file_result.patch_covered_lines,
+            patch_total_lines=file_result.patch_total_lines,
         )
+        session.add(file_annotation)
+        session.flush()
+        for line_result in file_result.lines:
+            session.add(
+                PrFileLineAnnotation(
+                    file_annotation_id=file_annotation.id,
+                    line_number=line_result.number,
+                    covered=line_result.covered,
+                    line_content=changed_line_contents.get(file_result.path, {}).get(
+                        line_result.number
+                    ),
+                )
+            )
     return annotation
 
 

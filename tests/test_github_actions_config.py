@@ -29,6 +29,10 @@ class GitHubActionsConfigTests(unittest.TestCase):
         self.assertIn("python -m coverage run -m unittest discover -s tests", text)
         self.assertIn("python -m coverage xml", text)
         self.assertIn("uses: ./upload-action", text)
+        self.assertIn(
+            "if: (github.event_name == 'pull_request' || github.event_name == 'push')",
+            text,
+        )
         self.assertIn("COVIVY_BASE_URL", text)
         self.assertIn("COVIVY_UPLOAD_TOKEN", text)
         self.assertIn("coverage.xml", text)

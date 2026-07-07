@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html import escape
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -9,7 +10,15 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
 from app.db import get_session
-from app.models import Commit, CoverageReportRow, PrAnnotation, PrFileAnnotation, PullRequest, Repository
+from app.models import (
+    Commit,
+    CoverageReportRow,
+    PrAnnotation,
+    PrFileAnnotation,
+    PrFileLineAnnotation,
+    PullRequest,
+    Repository,
+)
 from app.security import verify_github_signature
 from app.services import (
     create_upload,
@@ -26,6 +35,183 @@ app = FastAPI(title="Coverage Service")
 
 def percent(value: float) -> str:
     return "%.2f%%" % (value * 100)
+
+
+def status_icon(passed: bool) -> str:
+    if passed:
+        return '<span class="status-pass" style="color: green">✓</span>'
+    return '<span class="status-fail" style="color: red">✗</span>'
+
+
+def trend_icon(current: float, base: Optional[float]) -> str:
+    if base is None:
+        return ""
+    if current >= base:
+        return '<span class="trend-up" style="color: green">↑</span>'
+    return '<span class="trend-down" style="color: red">↓</span>'
+
+
+def signed_percent(value: Optional[float]) -> str:
+    if value is None:
+        return "Base unavailable"
+    return "%+.2f%%" % (value * 100)
+
+
+def page_html(title: str, body: str) -> str:
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>" + escape(title) + "</title>"
+        "<style>"
+        ":root{color-scheme:light;--bg:#f6f8fa;--panel:#fff;--text:#1f2328;"
+        "--muted:#656d76;--border:#d0d7de;--green:#1a7f37;--red:#cf222e;"
+        "--blue:#0969da;--soft:#f6f8fa}"
+        "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px}"
+        "a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}"
+        ".coverage-page{max-width:1180px;margin:0 auto;padding:24px}"
+        ".topbar{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}"
+        ".title-block h1{font-size:24px;line-height:1.25;margin:0 0 8px}.muted{color:var(--muted)}"
+        ".chips{display:flex;flex-wrap:wrap;gap:8px}.chip{border:1px solid var(--border);"
+        "background:var(--panel);border-radius:999px;padding:5px 9px;color:var(--muted)}"
+        ".metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}"
+        ".summary-card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px}"
+        ".summary-card .label{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:700}"
+        ".summary-card .value{font-size:24px;font-weight:700;margin-top:8px}.summary-card .sub{margin-top:4px;color:var(--muted)}"
+        ".status-pass,.trend-up,.positive{color:var(--green);font-weight:700}.status-fail,.trend-down,.negative{color:var(--red);font-weight:700}"
+        ".tabs{display:flex;gap:18px;border-bottom:1px solid var(--border);margin:18px 0}.tab{padding:10px 0;font-weight:600}"
+        ".tab.active{border-bottom:3px solid var(--text)}.panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}"
+        "table{width:100%;border-collapse:collapse;background:var(--panel)}th,td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}"
+        "th{font-size:12px;color:var(--muted);text-transform:uppercase;background:var(--soft)}td.num,th.num{text-align:right}"
+        ".changed-files-table td:first-child{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}"
+        ".files-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}"
+        ".file-line-report{display:grid;grid-template-columns:1fr 1fr;gap:16px}.line-list{margin:0;padding:0;list-style:none}"
+        ".line-list li{display:flex;gap:8px;padding:7px 9px;border-bottom:1px solid var(--border);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}"
+        ".line-covered .mark{color:var(--green);font-weight:700}.line-missing .mark{color:var(--red);font-weight:700}"
+        ".file-diff-report{border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:16px 0;background:var(--panel)}"
+        ".file-diff-header{display:grid;grid-template-columns:1fr 90px 110px 110px 90px;gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);background:#fff;font-weight:700}"
+        ".file-diff-header .file-name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.file-diff-header .num{text-align:right}"
+        ".diff-hunk{background:#f6f8fa;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:5px 10px;border-bottom:1px solid var(--border)}"
+        ".diff-line{display:grid;grid-template-columns:72px 28px 1fr;align-items:start;min-height:28px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border-bottom:1px solid #eef1f4}"
+        ".diff-line-number{color:#57606a;text-align:right;padding:5px 10px;border-right:1px solid var(--border);background:#f6f8fa}"
+        ".diff-marker{text-align:center;padding:5px 0;color:#57606a}.diff-code{white-space:pre-wrap;padding:5px 10px;overflow-wrap:anywhere}"
+        ".diff-line-covered{background:#dafbe1}.diff-line-missing{background:#ffebe9}"
+        ".diff-line-covered .diff-marker{color:var(--green);font-weight:700}.diff-line-missing .diff-marker{color:var(--red);font-weight:700}"
+        "@media(max-width:760px){.coverage-page{padding:14px}.topbar{display:block}.metric-grid,.files-summary,.file-line-report{grid-template-columns:1fr}table{font-size:13px}}"
+        "</style></head><body>" + body + "</body></html>"
+    )
+
+
+def metric_card(label: str, value: str, sub: str = "", class_name: str = "") -> str:
+    return (
+        '<section class="summary-card {class_name}"><div class="label">{label}</div>'
+        '<div class="value">{value}</div><div class="sub">{sub}</div></section>'
+    ).format(class_name=class_name, label=escape(label), value=value, sub=sub)
+
+
+def pr_header(repository: Repository, pull: PullRequest, report: Optional[CoverageReportRow]) -> str:
+    return (
+        '<header class="topbar"><div class="title-block">'
+        '<h1>{repo} · PR #{number}: {title}</h1>'
+        '<div class="muted">State: {state}</div></div>'
+        '<div class="chips">'
+        '<span class="chip">Base commit <code>{base}</code></span>'
+        '<span class="chip">PR head commit <code>{head}</code></span>'
+        '<span class="chip">Coverage report commit <code>{report_commit}</code></span>'
+        "</div></header>"
+    ).format(
+        repo=escape(repository.full_name),
+        number=pull.github_pr_number,
+        title=escape(pull.title or ""),
+        state=escape(pull.state),
+        base=escape(pull.base_sha or ""),
+        head=escape(pull.head_sha or ""),
+        report_commit=escape(pull.head_sha if report is not None else "No report for current head"),
+    )
+
+
+def summary_metrics_html(
+    annotation: Optional[PrAnnotation],
+    report: Optional[CoverageReportRow],
+    base_report: Optional[CoverageReportRow],
+    target: float,
+) -> str:
+    if report is None:
+        return '<div class="panel">No coverage report for head commit yet.</div>'
+    patch_value = "No patch data"
+    patch_sub = ""
+    patch_class = ""
+    if annotation is not None:
+        patch_passed = annotation.patch_line_rate >= target
+        patch_value = "%s %s" % (percent(annotation.patch_line_rate), status_icon(patch_passed))
+        patch_sub = "%s / %s changed lines" % (
+            annotation.patch_covered_lines,
+            annotation.patch_total_lines,
+        )
+        patch_class = "pass" if patch_passed else "fail"
+    project_delta = report.line_rate - base_report.line_rate if base_report is not None else None
+    project_delta_class = "positive" if project_delta is not None and project_delta >= 0 else "negative"
+    return (
+        '<div class="metric-grid">'
+        "{patch_card}{project_card}{change_card}"
+        "</div>"
+    ).format(
+        patch_card=metric_card("Covered changed lines", patch_value, patch_sub, patch_class),
+        project_card=metric_card(
+            "Project coverage",
+            "%s %s" % (percent(report.line_rate), trend_icon(report.line_rate, base_report.line_rate if base_report else None)),
+            "%s / %s covered lines" % (report.covered_lines, report.total_lines),
+        ),
+        change_card=metric_card(
+            "Coverage change",
+            '<span class="{class_name}">{value}</span>'.format(
+                class_name=project_delta_class,
+                value=escape(signed_percent(project_delta)),
+            ),
+            "Compared with base report" if base_report is not None else "Base coverage report unavailable",
+        ),
+    )
+
+
+def file_diff_html(file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation], target: float) -> str:
+    missing = file.patch_total_lines - file.patch_covered_lines
+    line_parts = []
+    for line in line_rows:
+        line_parts.append(
+            '<div class="diff-line {class_name}">'
+            '<div class="diff-line-number">{line_number}</div>'
+            '<div class="diff-marker">{mark}</div>'
+            '<code class="diff-code">{content}</code></div>'.format(
+                class_name="diff-line-covered" if line.covered else "diff-line-missing",
+                line_number=line.line_number,
+                mark="+" if line.covered else "!",
+                content=escape(
+                    line.line_content if line.line_content is not None else "Line %s" % line.line_number
+                ),
+            )
+        )
+    if not line_parts:
+        line_parts.append('<div class="diff-line"><div></div><div></div><code class="diff-code">No changed line coverage available.</code></div>')
+    return (
+        '<section class="file-diff-report">'
+        '<h3>{path} line coverage</h3>'
+        '<div class="file-diff-header">'
+        '<div class="file-name">{path}</div>'
+        '<div class="num">{missing}</div>'
+        '<div class="num">{patch}</div>'
+        '<div class="num">{project}</div>'
+        '<div class="num">{change}</div>'
+        "</div>"
+        '<div class="diff-hunk">Changed lines in this file</div>'
+        "{lines}</section>"
+    ).format(
+        path=escape(file.path),
+        missing=missing,
+        patch=percent(file.patch_line_rate),
+        project=percent(file.patch_line_rate),
+        change=status_icon(file.patch_line_rate >= target),
+        lines="".join(line_parts),
+    )
 
 
 @app.get("/healthz")
@@ -353,6 +539,9 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
     if pull is None:
         raise HTTPException(status_code=404, detail="pull request not found")
     report = latest_report_for_commit(session, repository.id, pull.head_sha)
+    base_report = None
+    if pull.base_sha:
+        base_report = latest_report_for_commit(session, repository.id, pull.base_sha)
     annotation = None
     if report is not None:
         annotation = session.scalar(
@@ -361,51 +550,49 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
             .order_by(PrAnnotation.updated_at.desc())
             .limit(1)
         )
-    coverage_html = "<p>No coverage report for head commit yet.</p>"
-    if report is not None:
-        coverage_html = (
-            "<p>Project coverage: {coverage}</p><p>Covered lines: {lines}</p>".format(
-                coverage=percent(report.line_rate),
-                lines="%s / %s" % (report.covered_lines, report.total_lines),
-            )
-        )
+    target = get_settings().patch_coverage_minimum
+    coverage_html = summary_metrics_html(annotation, report, base_report, target)
+    if report is not None and pull.base_sha and base_report is None:
+        coverage_html += '<div class="panel">Base coverage report unavailable for project trend.</div>'
     patch_html = "<p>No patch coverage computed yet.</p>"
     if annotation is not None:
+        patch_passed = annotation.patch_line_rate >= target
+        base_line_rate = base_report.line_rate if base_report is not None else None
         patch_html = (
+            '<section class="panel">'
             "<table><tr><th>Metric</th><th>Covered</th><th>Coverage</th></tr>"
-            "<tr><td>Covered changed lines</td><td>{patch_lines}</td><td>{patch}</td></tr>"
-            "<tr><td>Project coverage</td><td>{project_lines}</td><td>{project}</td></tr>"
-            "<tr><td>Status</td><td colspan=\"2\">{status}</td></tr></table>"
-            '<p><a href="/repos/{owner}/{repo}/pulls/{number}/files">Changed file coverage</a></p>'
+            "<tr><td>Covered changed lines</td><td>{patch_lines}</td><td>{patch} {patch_icon}</td></tr>"
+            "<tr><td>Project coverage</td><td>{project_lines}</td><td>{project} {project_icon}</td></tr>"
+            "<tr><td>Status</td><td colspan=\"2\">{status}</td></tr></table></section>"
+            '<section class="panel"><a class="tab active" href="/repos/{owner}/{repo}/pulls/{number}/files">'
+            "Changed file coverage</a></section>"
         ).format(
             owner=owner,
             repo=repo,
             number=number,
             patch=percent(annotation.patch_line_rate),
+            patch_icon=status_icon(patch_passed),
             patch_lines="%s / %s" % (annotation.patch_covered_lines, annotation.patch_total_lines),
             project=percent(report.line_rate),
+            project_icon=trend_icon(report.line_rate, base_line_rate),
             project_lines="%s / %s" % (report.covered_lines, report.total_lines),
             status=annotation.status,
         )
-    return HTMLResponse(
-        "<html><body><h1>PR #{number}: {title}</h1>"
-        "<p>State: {state}</p>"
-        "<p>Coverage report commit: <code>{report_commit}</code></p>"
-        "<p>Base commit: <code>{base}</code></p>"
-        "<p>PR head commit: <code>{head}</code></p>"
-        "<h2>Coverage</h2>{coverage}"
-        "<h2>Patch</h2>{patch}"
-        "</body></html>".format(
-            number=pull.github_pr_number,
-            title=pull.title or "",
-            state=pull.state,
-            report_commit=pull.head_sha if report is not None else "No report for current head",
-            head=pull.head_sha,
-            base=pull.base_sha or "",
-            coverage=coverage_html,
-            patch=patch_html,
-        )
+    body = (
+        '<main class="coverage-page">'
+        "{header}"
+        '<nav class="tabs"><span class="tab active">Summary</span>'
+        '<a class="tab" href="/repos/{owner}/{repo}/pulls/{number}/files">Changed files</a></nav>'
+        "{coverage}<h2>Coverage report commit</h2>{patch}</main>"
+    ).format(
+        header=pr_header(repository, pull, report),
+        owner=owner,
+        repo=repo,
+        number=pull.github_pr_number,
+        coverage=coverage_html,
+        patch=patch_html,
     )
+    return HTMLResponse(page_html("PR #%s coverage" % pull.github_pr_number, body))
 
 
 @app.get("/repos/{owner}/{repo}/pulls/{number}/files", response_class=HTMLResponse)
@@ -432,26 +619,156 @@ def pull_file_dashboard(owner: str, repo: str, number: int, session: Session = D
             .order_by(PrAnnotation.updated_at.desc())
             .limit(1)
         )
+    target = get_settings().patch_coverage_minimum
+    base_report = latest_report_for_commit(session, repository.id, pull.base_sha) if pull.base_sha else None
+    summary_html = summary_metrics_html(annotation, report, base_report, target)
     rows = ""
+    diff_sections = ""
+    file_count = 0
+    failing_count = 0
+    missing_count = 0
     if annotation is not None:
         file_rows = session.scalars(
             select(PrFileAnnotation)
             .where(PrFileAnnotation.annotation_id == annotation.id)
-            .order_by(PrFileAnnotation.path)
         ).all()
-        rows = "\n".join(
-            "<tr><td>{path}</td><td>{lines}</td><td>{coverage}</td></tr>".format(
-                path=file.path,
-                lines="%s / %s" % (file.patch_covered_lines, file.patch_total_lines),
-                coverage=percent(file.patch_line_rate),
-            )
-            for file in file_rows
+        file_rows = sorted(
+            file_rows,
+            key=lambda file: (
+                file.patch_line_rate >= target,
+                file.patch_line_rate,
+                -(file.patch_total_lines - file.patch_covered_lines),
+                file.path,
+            ),
         )
+        row_parts = []
+        diff_parts = []
+        for file in file_rows:
+            file_count += 1
+            missing_for_file = file.patch_total_lines - file.patch_covered_lines
+            missing_count += missing_for_file
+            if file.patch_line_rate < target:
+                failing_count += 1
+            line_rows = session.scalars(
+                select(PrFileLineAnnotation)
+                .where(PrFileLineAnnotation.file_annotation_id == file.id)
+                .order_by(PrFileLineAnnotation.line_number)
+            ).all()
+            row_parts.append(
+                "<tr><td>{path}</td><td>{lines}</td><td>{coverage} {icon}</td>"
+                "<td>{missing}</td><td>{status}</td></tr>".format(
+                    path=escape(file.path),
+                    lines="%s / %s" % (file.patch_covered_lines, file.patch_total_lines),
+                    coverage=percent(file.patch_line_rate),
+                    icon=status_icon(file.patch_line_rate >= target),
+                    missing=missing_for_file,
+                    status="passed" if file.patch_line_rate >= target else "failed",
+                )
+            )
+            diff_parts.append(file_diff_html(file, line_rows, target))
+        rows = "\n".join(row_parts)
+        diff_sections = "\n".join(diff_parts)
     if not rows:
-        rows = '<tr><td colspan="3">No changed file coverage available.</td></tr>'
-    return HTMLResponse(
-        "<html><body><h1>Changed file coverage for PR #{number}</h1>"
-        '<p><a href="/repos/{owner}/{repo}/pulls/{number}">Back to PR coverage</a></p>'
-        "<table><tr><th>File</th><th>Covered</th><th>Coverage</th></tr>{rows}</table>"
-        "</body></html>".format(owner=owner, repo=repo, number=number, rows=rows)
+        rows = '<tr><td colspan="5">No changed file coverage available.</td></tr>'
+    passing_count = max(file_count - failing_count, 0)
+    files_summary = (
+        '<div class="files-summary">'
+        "{files}{passing}{failing}{missing}</div>"
+    ).format(
+        files=metric_card("Files changed", str(file_count)),
+        passing=metric_card("Files passing target", str(passing_count), class_name="pass"),
+        failing=metric_card("Files failing target", str(failing_count), class_name="fail"),
+        missing=metric_card("Total missing changed lines", str(missing_count), class_name="fail"),
     )
+    body = (
+        '<main class="coverage-page">'
+        "{header}"
+        '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
+        '<span class="tab active">Changed files</span></nav>'
+        "{summary}<section class=\"panel\"><h2>Changed file coverage</h2>{files_summary}"
+        '<table class="changed-files-table"><tr><th>File</th><th>Changed lines</th>'
+        '<th>Patch coverage</th><th>Missing</th><th>Status</th></tr>{rows}</table></section>'
+        '<section class="panel"><h2>File coverage details</h2>{diff_sections}</section>'
+        "</main>"
+    ).format(
+        header=pr_header(repository, pull, report),
+        owner=owner,
+        repo=repo,
+        number=number,
+        summary=summary_html,
+        files_summary=files_summary,
+        rows=rows,
+        diff_sections=diff_sections or '<p>No changed file coverage available.</p>',
+    )
+    return HTMLResponse(page_html("PR #%s changed files" % number, body))
+
+
+@app.get("/repos/{owner}/{repo}/pulls/{number}/files/{file_path:path}", response_class=HTMLResponse)
+def pull_single_file_dashboard(
+    owner: str,
+    repo: str,
+    number: int,
+    file_path: str,
+    session: Session = Depends(get_session),
+):
+    repository = session.scalar(
+        select(Repository).where(Repository.owner == owner, Repository.name == repo)
+    )
+    if repository is None:
+        raise HTTPException(status_code=404, detail="repository not found")
+    pull = session.scalar(
+        select(PullRequest).where(
+            PullRequest.repository_id == repository.id,
+            PullRequest.github_pr_number == number,
+        )
+    )
+    if pull is None:
+        raise HTTPException(status_code=404, detail="pull request not found")
+    report = latest_report_for_commit(session, repository.id, pull.head_sha)
+    annotation = None
+    if report is not None:
+        annotation = session.scalar(
+            select(PrAnnotation)
+            .where(PrAnnotation.pull_request_id == pull.id, PrAnnotation.report_id == report.id)
+            .order_by(PrAnnotation.updated_at.desc())
+            .limit(1)
+        )
+    if annotation is None:
+        raise HTTPException(status_code=404, detail="changed file coverage not found")
+    file = session.scalar(
+        select(PrFileAnnotation).where(
+            PrFileAnnotation.annotation_id == annotation.id,
+            PrFileAnnotation.path == file_path,
+        )
+    )
+    if file is None:
+        raise HTTPException(status_code=404, detail="changed file coverage not found")
+    line_rows = session.scalars(
+        select(PrFileLineAnnotation)
+        .where(PrFileLineAnnotation.file_annotation_id == file.id)
+        .order_by(PrFileLineAnnotation.line_number)
+    ).all()
+    target = get_settings().patch_coverage_minimum
+    body = (
+        '<main class="coverage-page">'
+        "{header}"
+        '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
+        '<a class="tab" href="/repos/{owner}/{repo}/pulls/{number}/files">Changed files</a>'
+        '<span class="tab active">File view</span></nav>'
+        '<section class="panel"><h2>{path} line coverage</h2>'
+        '<div class="metric-grid">{metric}</div></section>'
+        '<section class="panel">{diff}</section></main>'
+    ).format(
+        header=pr_header(repository, pull, report),
+        owner=owner,
+        repo=repo,
+        number=number,
+        path=escape(file.path),
+        metric=metric_card(
+            "Patch coverage",
+            "%s %s" % (percent(file.patch_line_rate), status_icon(file.patch_line_rate >= target)),
+            "%s / %s changed lines" % (file.patch_covered_lines, file.patch_total_lines),
+        ),
+        diff=file_diff_html(file, line_rows, target),
+    )
+    return HTMLResponse(page_html("%s coverage" % file.path, body))

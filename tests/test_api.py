@@ -18,6 +18,7 @@ from app.models import (
     LineCoverage,
     PrAnnotation,
     PrFileAnnotation,
+    PrFileLineAnnotation,
     PullRequest,
     Repository,
     Upload,
@@ -331,7 +332,8 @@ class ApiTests(unittest.TestCase):
             from app.models import Commit
 
             commit = Commit(repository_id=repository.id, sha="abc123", branch="feature")
-            session.add(commit)
+            base_commit = Commit(repository_id=repository.id, sha="base123", branch="main")
+            session.add_all([commit, base_commit])
             session.flush()
             pull = PullRequest(
                 repository_id=repository.id,
@@ -348,8 +350,25 @@ class ApiTests(unittest.TestCase):
                 storage_path="/tmp/lcov.info",
                 status="processed",
             )
-            session.add_all([pull, upload])
+            base_upload = Upload(
+                repository_id=repository.id,
+                commit_id=base_commit.id,
+                format="lcov",
+                storage_path="/tmp/base-lcov.info",
+                status="processed",
+            )
+            session.add_all([pull, upload, base_upload])
             session.flush()
+            session.add(
+                CoverageReportRow(
+                    repository_id=repository.id,
+                    commit_id=base_commit.id,
+                    upload_id=base_upload.id,
+                    line_rate=0.25,
+                    covered_lines=1,
+                    total_lines=4,
+                )
+            )
             report = CoverageReportRow(
                 repository_id=repository.id,
                 commit_id=commit.id,
@@ -380,13 +399,29 @@ class ApiTests(unittest.TestCase):
             )
             session.add(annotation)
             session.flush()
-            session.add(
-                PrFileAnnotation(
-                    annotation_id=annotation.id,
-                    path="src/api.py",
-                    patch_covered_lines=1,
-                    patch_total_lines=2,
-                )
+            file_annotation = PrFileAnnotation(
+                annotation_id=annotation.id,
+                path="src/api.py",
+                patch_covered_lines=1,
+                patch_total_lines=2,
+            )
+            session.add(file_annotation)
+            session.flush()
+            session.add_all(
+                [
+                    PrFileLineAnnotation(
+                        file_annotation_id=file_annotation.id,
+                        line_number=1,
+                        covered=True,
+                        line_content="return ok",
+                    ),
+                    PrFileLineAnnotation(
+                        file_annotation_id=file_annotation.id,
+                        line_number=2,
+                        covered=False,
+                        line_content="return missing",
+                    ),
+                ]
             )
             session.commit()
 
@@ -404,13 +439,23 @@ class ApiTests(unittest.TestCase):
         pull_response = self.client.get("/repos/octo/demo/pulls/7")
         self.assertEqual(pull_response.status_code, 200)
         self.assertIn("Add API", pull_response.text)
+        self.assertIn("coverage-page", pull_response.text)
+        self.assertIn("summary-card", pull_response.text)
+        self.assertIn("metric-grid", pull_response.text)
+        self.assertIn("Covered changed lines", pull_response.text)
+        self.assertIn("Project coverage", pull_response.text)
+        self.assertIn("Coverage change", pull_response.text)
         self.assertIn("Coverage report commit", pull_response.text)
         self.assertIn("abc123", pull_response.text)
         self.assertIn("Base commit", pull_response.text)
         self.assertIn("base123", pull_response.text)
         self.assertIn("<th>Metric</th><th>Covered</th><th>Coverage</th>", pull_response.text)
-        self.assertIn("<td>Covered changed lines</td><td>1 / 2</td><td>50.00%</td>", pull_response.text)
-        self.assertIn("<td>Project coverage</td><td>1 / 2</td><td>50.00%</td>", pull_response.text)
+        self.assertIn("status-fail", pull_response.text)
+        self.assertIn("✗", pull_response.text)
+        self.assertIn("<td>Covered changed lines</td><td>1 / 2</td><td>50.00%", pull_response.text)
+        self.assertIn("trend-up", pull_response.text)
+        self.assertIn("↑", pull_response.text)
+        self.assertIn("<td>Project coverage</td><td>1 / 2</td><td>50.00%", pull_response.text)
         self.assertIn("Changed file coverage", pull_response.text)
         self.assertIn("/repos/octo/demo/pulls/7/files", pull_response.text)
         self.assertNotIn("src/api.py</td>", pull_response.text)
@@ -419,7 +464,82 @@ class ApiTests(unittest.TestCase):
         files_response = self.client.get("/repos/octo/demo/pulls/7/files")
         self.assertEqual(files_response.status_code, 200)
         self.assertIn("Changed file coverage", files_response.text)
-        self.assertIn("<td>src/api.py</td><td>1 / 2</td><td>50.00%</td>", files_response.text)
+        self.assertIn("files-summary", files_response.text)
+        self.assertIn("changed-files-table", files_response.text)
+        self.assertIn("file-diff-report", files_response.text)
+        self.assertIn("diff-line-covered", files_response.text)
+        self.assertIn("diff-line-missing", files_response.text)
+        self.assertIn("Files failing target", files_response.text)
+        self.assertIn("Total missing changed lines", files_response.text)
+        self.assertIn("<td>src/api.py</td>", files_response.text)
+        self.assertIn("<td>1 / 2</td>", files_response.text)
+        self.assertIn("<td>50.00%", files_response.text)
+        self.assertIn("<td>1</td>", files_response.text)
+        self.assertIn("status-fail", files_response.text)
+        self.assertNotIn("View file", files_response.text)
+        self.assertIn("src/api.py line coverage", files_response.text)
+        self.assertIn("return ok", files_response.text)
+        self.assertIn("return missing", files_response.text)
+
+    def test_pull_dashboard_explains_missing_base_report_for_project_trend(self):
+        with self.Session() as session:
+            repository = Repository(
+                owner="octo",
+                name="demo",
+                full_name="octo/demo",
+                default_branch="main",
+                private=False,
+            )
+            session.add(repository)
+            session.flush()
+            from app.models import Commit
+
+            commit = Commit(repository_id=repository.id, sha="abc123", branch="feature")
+            session.add(commit)
+            session.flush()
+            pull = PullRequest(
+                repository_id=repository.id,
+                github_pr_number=7,
+                head_sha="abc123",
+                base_sha="base123",
+                state="open",
+                title="Add API",
+            )
+            upload = Upload(
+                repository_id=repository.id,
+                commit_id=commit.id,
+                format="lcov",
+                storage_path="/tmp/lcov.info",
+                status="processed",
+            )
+            session.add_all([pull, upload])
+            session.flush()
+            report = CoverageReportRow(
+                repository_id=repository.id,
+                commit_id=commit.id,
+                upload_id=upload.id,
+                line_rate=0.5,
+                covered_lines=1,
+                total_lines=2,
+            )
+            session.add(report)
+            session.flush()
+            session.add(
+                PrAnnotation(
+                    pull_request_id=pull.id,
+                    report_id=report.id,
+                    patch_covered_lines=1,
+                    patch_total_lines=2,
+                    patch_line_rate=0.5,
+                    status="failure",
+                )
+            )
+            session.commit()
+
+        pull_response = self.client.get("/repos/octo/demo/pulls/7")
+
+        self.assertEqual(pull_response.status_code, 200)
+        self.assertIn("Base coverage report unavailable", pull_response.text)
 
 
 if __name__ == "__main__":

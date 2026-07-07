@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import base64
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 import jwt
 
-from app.coverage import parse_unified_diff_changed_lines
+from app.coverage import parse_unified_diff_changed_line_contents, parse_unified_diff_changed_lines
 
 
 class GitHubPermissionError(RuntimeError):
@@ -83,6 +85,30 @@ class InstallationGitHubClient:
             response.raise_for_status()
             return response.json()
 
+    async def file_content(
+        self, owner: str, repo: str, path: str, ref: str
+    ) -> Optional[str]:
+        encoded_path = quote(path)
+        url = "https://api.github.com/repos/%s/%s/contents/%s" % (
+            owner,
+            repo,
+            encoded_path,
+        )
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(url, headers=self.headers, params={"ref": ref})
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("encoding") != "base64":
+            return None
+        content = payload.get("content")
+        if not isinstance(content, str):
+            return None
+        return base64.b64decode(content).decode("utf-8", errors="replace")
+
     async def create_status(
         self,
         owner: str,
@@ -156,6 +182,14 @@ class InstallationGitHubClient:
 def changed_lines_from_pull_files(files: List[PullFilePatch]) -> Dict[str, set]:
     return {
         file.filename: parse_unified_diff_changed_lines(file.patch)
+        for file in files
+        if file.patch
+    }
+
+
+def changed_line_contents_from_pull_files(files: List[PullFilePatch]) -> Dict[str, Dict[int, str]]:
+    return {
+        file.filename: parse_unified_diff_changed_line_contents(file.patch)
         for file in files
         if file.patch
     }

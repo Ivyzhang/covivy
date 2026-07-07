@@ -19,6 +19,7 @@ from app.models import (
     Job,
     PrAnnotation,
     PrFileAnnotation,
+    PrFileLineAnnotation,
     PullRequest,
     Repository,
     Upload,
@@ -40,6 +41,23 @@ class FakeInstallationClient:
     def __init__(self):
         self.statuses = []
         self.comments = []
+        self.file_contents = {
+            "src/api.py": "\n".join(
+                [
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "covered",
+                    "missed",
+                    "ignored",
+                ]
+            )
+        }
         self.pull_payload = {
             "number": 7,
             "head": {"sha": "abc123", "ref": "feature"},
@@ -64,6 +82,9 @@ class FakeInstallationClient:
 """,
             )
         ]
+
+    async def file_content(self, owner, repo, path, ref):
+        return self.file_contents.get(path)
 
     async def create_status(self, owner, repo, sha, state, description, target_url, context="coverage/patch"):
         self.statuses.append(
@@ -444,7 +465,8 @@ class ServiceTests(unittest.TestCase):
             session.add(repository)
             session.flush()
             commit = Commit(repository_id=repository.id, sha="abc123", branch="feature")
-            session.add(commit)
+            base_commit = Commit(repository_id=repository.id, sha="base123", branch="main")
+            session.add_all([commit, base_commit])
             session.flush()
             pull = PullRequest(
                 repository_id=repository.id,
@@ -461,7 +483,14 @@ class ServiceTests(unittest.TestCase):
                 storage_path=str(Path(self.tmpdir.name) / "coverage.xml"),
                 status="processed",
             )
-            session.add_all([pull, upload])
+            base_upload = Upload(
+                repository_id=repository.id,
+                commit_id=base_commit.id,
+                format="cobertura",
+                storage_path=str(Path(self.tmpdir.name) / "base-coverage.xml"),
+                status="processed",
+            )
+            session.add_all([pull, upload, base_upload])
             session.flush()
             report = CoverageReportRow(
                 repository_id=repository.id,
@@ -470,6 +499,14 @@ class ServiceTests(unittest.TestCase):
                 line_rate=2 / 3,
                 covered_lines=2,
                 total_lines=3,
+            )
+            base_report = CoverageReportRow(
+                repository_id=repository.id,
+                commit_id=base_commit.id,
+                upload_id=base_upload.id,
+                line_rate=0.5,
+                covered_lines=1,
+                total_lines=2,
             )
             from app.models import FileCoverage, LineCoverage
 
@@ -487,7 +524,7 @@ class ServiceTests(unittest.TestCase):
                 ]
             )
             report.files.append(file_row)
-            session.add(report)
+            session.add_all([report, base_report])
             session.flush()
 
             fake = FakeInstallationClient()
@@ -498,13 +535,18 @@ class ServiceTests(unittest.TestCase):
             stored_file = session.scalar(
                 select(PrFileAnnotation).where(PrFileAnnotation.annotation_id == stored.id)
             )
+            stored_lines = session.scalars(
+                select(PrFileLineAnnotation)
+                .where(PrFileLineAnnotation.file_annotation_id == stored_file.id)
+                .order_by(PrFileLineAnnotation.line_number)
+            ).all()
 
         self.assertEqual(fake.statuses[0]["state"], "failure")
         self.assertEqual(fake.statuses[0]["context"], "coverage/patch")
         self.assertIn("66.67%", fake.statuses[0]["description"])
         self.assertIn("| Metric | Covered | Coverage |", fake.comments[0]["body"])
-        self.assertIn("| Covered changed lines | 2 / 3 | 66.67% |", fake.comments[0]["body"])
-        self.assertIn("| Project coverage | 2 / 3 | 66.67% |", fake.comments[0]["body"])
+        self.assertIn("| Covered changed lines | 2 / 3 | 66.67% ❌ |", fake.comments[0]["body"])
+        self.assertIn("| Project coverage | 2 / 3 | 66.67% 🟢 ↑ |", fake.comments[0]["body"])
         self.assertIn("Changed file coverage", fake.comments[0]["body"])
         self.assertIn("/repos/octo/demo/pulls/7/files", fake.comments[0]["body"])
         self.assertNotIn("| src/api.py | 2 / 3 | 66.67% |", fake.comments[0]["body"])
@@ -513,6 +555,10 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(stored_file.path, "src/api.py")
         self.assertEqual(stored_file.patch_covered_lines, 2)
         self.assertEqual(stored_file.patch_total_lines, 3)
+        self.assertEqual(
+            [(line.line_number, line.covered, line.line_content) for line in stored_lines],
+            [(9, True, "covered"), (10, True, "missed"), (11, False, "ignored")],
+        )
 
     def test_render_pr_comment_includes_unmatched_warnings(self):
         from app.coverage import PatchCoverageResult
@@ -528,12 +574,13 @@ class ServiceTests(unittest.TestCase):
             result,
             project_covered_lines=14,
             project_total_lines=17,
+            base_project_line_rate=0.9,
             target=0.8,
             url="https://coverage.example/repos/octo/demo/pulls/7",
         )
 
-        self.assertIn("Covered changed lines | 0 / 0 | 100.00%", body)
-        self.assertIn("Project coverage | 14 / 17 | 82.35%", body)
+        self.assertIn("Covered changed lines | 0 / 0 | 100.00% ✅", body)
+        self.assertIn("Project coverage | 14 / 17 | 82.35% 🔴 ↓", body)
         self.assertIn("No coverable changed lines found.", body)
         self.assertIn("docs/readme.md did not match any coverage file", body)
 
