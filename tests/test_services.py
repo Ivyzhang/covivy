@@ -26,6 +26,7 @@ from app.security import hash_upload_token
 from app.services import (
     create_upload,
     process_parse_upload_job,
+    render_pr_comment,
     sync_installation_repositories_event,
     sync_installation_event,
     update_github_failure_status,
@@ -495,9 +496,35 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(fake.statuses[0]["state"], "failure")
         self.assertEqual(fake.statuses[0]["context"], "coverage/patch")
         self.assertIn("66.67%", fake.statuses[0]["description"])
-        self.assertIn("Patch coverage | 66.67%", fake.comments[0]["body"])
+        self.assertIn("| Metric | Covered | Coverage |", fake.comments[0]["body"])
+        self.assertIn("| Covered changed lines | 2 / 3 | 66.67% |", fake.comments[0]["body"])
+        self.assertIn("| Project coverage | 2 / 3 | 66.67% |", fake.comments[0]["body"])
+        self.assertIn("| src/api.py | 2 / 3 | 66.67% |", fake.comments[0]["body"])
         self.assertEqual(stored.patch_covered_lines, 2)
         self.assertEqual(stored.patch_total_lines, 3)
+
+    def test_render_pr_comment_includes_unmatched_warnings(self):
+        from app.coverage import PatchCoverageResult
+
+        result = PatchCoverageResult(
+            patch_covered_lines=0,
+            patch_total_lines=0,
+            unmatched_files=["docs/readme.md"],
+            warnings=["docs/readme.md did not match any coverage file"],
+        )
+
+        body = render_pr_comment(
+            result,
+            project_covered_lines=14,
+            project_total_lines=17,
+            target=0.8,
+            url="https://coverage.example/repos/octo/demo/pulls/7",
+        )
+
+        self.assertIn("Covered changed lines | 0 / 0 | 100.00%", body)
+        self.assertIn("Project coverage | 14 / 17 | 82.35%", body)
+        self.assertIn("No coverable changed lines found.", body)
+        self.assertIn("docs/readme.md did not match any coverage file", body)
 
     def test_update_github_pr_skips_stale_upload_when_pr_head_changed(self):
         with self.Session() as session:

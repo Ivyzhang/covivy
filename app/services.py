@@ -409,26 +409,81 @@ def load_report_shape(report_row: CoverageReportRow) -> CoverageReport:
     return CoverageReport(files=files)
 
 
-def render_pr_comment(result, project_rate: float, target: float, url: str) -> str:
+def render_pr_comment(
+    result,
+    project_covered_lines: int,
+    project_total_lines: int,
+    target: float,
+    url: str,
+) -> str:
     status = "passed" if result.patch_line_rate >= target else "failed"
-    return "\n".join(
+
+    def coverage_percent(covered: int, total: int) -> str:
+        rate = 1.0 if total == 0 else covered / total
+        return "%.2f%%" % (rate * 100)
+
+    def covered_count(covered: int, total: int) -> str:
+        return "%s / %s" % (covered, total)
+
+    lines = [
+        "<!-- coverage-service:pr-comment -->",
+        "",
+        "## Coverage Report",
+        "",
+        "| Metric | Covered | Coverage |",
+        "| --- | ---: | ---: |",
+        "| Covered changed lines | %s | %s |"
+        % (
+            covered_count(result.patch_covered_lines, result.patch_total_lines),
+            coverage_percent(result.patch_covered_lines, result.patch_total_lines),
+        ),
+        "| Project coverage | %s | %s |"
+        % (
+            covered_count(project_covered_lines, project_total_lines),
+            coverage_percent(project_covered_lines, project_total_lines),
+        ),
+        "",
+    ]
+    if result.files:
+        lines.extend(
+            [
+                "### Changed files",
+                "",
+                "| File | Covered | Coverage |",
+                "| --- | ---: | ---: |",
+            ]
+        )
+        for file_result in result.files[:10]:
+            lines.append(
+                "| %s | %s | %s |"
+                % (
+                    file_result.path,
+                    covered_count(
+                        file_result.patch_covered_lines,
+                        file_result.patch_total_lines,
+                    ),
+                    coverage_percent(
+                        file_result.patch_covered_lines,
+                        file_result.patch_total_lines,
+                    ),
+                )
+            )
+        lines.append("")
+    if result.patch_total_lines == 0:
+        lines.extend(["No coverable changed lines found.", ""])
+    if result.warnings:
+        lines.extend(["### Warnings", ""])
+        for warning in result.warnings[:10]:
+            lines.append("- %s" % warning)
+        lines.append("")
+    lines.extend(
         [
-            "<!-- coverage-service:pr-comment -->",
-            "",
-            "## Coverage Report",
-            "",
-            "| Metric | Result |",
-            "| --- | ---: |",
-            "| Patch coverage | %.2f%% |" % (result.patch_line_rate * 100),
-            "| Covered changed lines | %s / %s |"
-            % (result.patch_covered_lines, result.patch_total_lines),
-            "| Project coverage | %.2f%% |" % (project_rate * 100),
-            "",
             "Status: %s. Patch coverage target is %.2f%%." % (status, target * 100),
             "",
             "[View full report](%s)" % url,
         ]
     )
+    return "\n".join(lines)
 
 
 def render_failure_pr_comment(message: str, url: str) -> str:
@@ -490,7 +545,11 @@ async def update_github_pr(
         .limit(1)
     )
     body = render_pr_comment(
-        result, report_row.line_rate, settings.patch_coverage_minimum, target_url
+        result,
+        report_row.covered_lines,
+        report_row.total_lines,
+        settings.patch_coverage_minimum,
+        target_url,
     )
     comment_id = await installation_client.upsert_pr_comment(
         repository.owner,

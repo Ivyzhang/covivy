@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set
 
 
@@ -53,9 +53,25 @@ class CoverageReport:
 
 
 @dataclass(frozen=True)
+class PatchFileCoverage:
+    path: str
+    patch_covered_lines: int
+    patch_total_lines: int
+
+    @property
+    def patch_line_rate(self) -> float:
+        if self.patch_total_lines == 0:
+            return 1.0
+        return self.patch_covered_lines / self.patch_total_lines
+
+
+@dataclass(frozen=True)
 class PatchCoverageResult:
     patch_covered_lines: int
     patch_total_lines: int
+    files: List[PatchFileCoverage] = field(default_factory=list)
+    unmatched_files: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def patch_line_rate(self) -> float:
@@ -74,6 +90,11 @@ class PatchCoverageResult:
         if self.patch_line_rate >= minimum:
             return "Patch coverage %.2f%% meets target %.2f%%" % (percent, target)
         return "Patch coverage %.2f%% is below target %.2f%%" % (percent, target)
+
+
+def format_coverage(covered: int, total: int) -> str:
+    rate = 1.0 if total == 0 else covered / total
+    return "%s / %s, (%.2f%%)" % (covered, total, rate * 100)
 
 
 def normalize_path(path: str, workspace_prefixes: Optional[Iterable[str]] = None) -> str:
@@ -202,19 +223,54 @@ def compute_patch_coverage(
 ) -> PatchCoverageResult:
     covered = 0
     total = 0
-    coverage_by_file = report.file_map()
+    file_results: List[PatchFileCoverage] = []
+    unmatched_files: List[str] = []
+    warnings: List[str] = []
+    coverage_by_file = {normalize_path(file.path): file for file in report.files}
+    normalized_paths = list(coverage_by_file)
     for path, changed_lines in changed_lines_by_file.items():
-        covered_file = coverage_by_file.get(normalize_path(path))
+        normalized_path = normalize_path(path)
+        covered_file = coverage_by_file.get(normalized_path)
         if covered_file is None:
+            suffix_matches = [
+                item for item in normalized_paths if item.endswith("/" + normalized_path)
+            ]
+            if len(suffix_matches) == 1:
+                covered_file = coverage_by_file[suffix_matches[0]]
+            elif len(suffix_matches) > 1:
+                unmatched_files.append(path)
+                warnings.append("%s matched multiple coverage files" % path)
+                continue
+        if covered_file is None:
+            if changed_lines:
+                unmatched_files.append(path)
+                warnings.append("%s did not match any coverage file" % path)
             continue
         hits_by_line = {line.number: line.hits for line in covered_file.lines}
+        file_covered = 0
+        file_total = 0
         for line_number in changed_lines:
             if line_number not in hits_by_line:
                 continue
-            total += 1
+            file_total += 1
             if hits_by_line[line_number] > 0:
-                covered += 1
-    return PatchCoverageResult(patch_covered_lines=covered, patch_total_lines=total)
+                file_covered += 1
+        covered += file_covered
+        total += file_total
+        file_results.append(
+            PatchFileCoverage(
+                path=path,
+                patch_covered_lines=file_covered,
+                patch_total_lines=file_total,
+            )
+        )
+    return PatchCoverageResult(
+        patch_covered_lines=covered,
+        patch_total_lines=total,
+        files=file_results,
+        unmatched_files=unmatched_files,
+        warnings=warnings,
+    )
 
 
 def parse_report(format_name: str, payload: bytes) -> CoverageReport:
@@ -224,4 +280,3 @@ def parse_report(format_name: str, payload: bytes) -> CoverageReport:
     if lowered == "lcov":
         return parse_lcov(payload)
     raise ValueError("unsupported coverage format: %s" % format_name)
-
