@@ -274,6 +274,47 @@ class ApiTests(unittest.TestCase):
             pull = session.scalar(select(PullRequest))
         self.assertEqual(update_job.payload_json["pull_request_id"], pull.id)
 
+    def test_pull_request_webhook_without_head_report_schedules_pending_update(self):
+        with self.Session() as session:
+            repository = Repository(
+                owner="octo",
+                name="demo",
+                full_name="octo/demo",
+                default_branch="main",
+                private=False,
+                upload_token_hash=hash_upload_token("cov_secret", "pepper"),
+            )
+            session.add(repository)
+            session.commit()
+
+        payload = {
+            "repository": {
+                "id": 300,
+                "name": "demo",
+                "full_name": "octo/demo",
+                "private": False,
+                "default_branch": "main",
+                "owner": {"login": "octo"},
+            },
+            "pull_request": {
+                "number": 7,
+                "head": {"sha": "new456", "ref": "feature"},
+                "base": {"sha": "base123", "ref": "main"},
+                "state": "open",
+                "title": "Add API",
+            },
+        }
+        body, headers = self.sign(payload)
+        headers["X-GitHub-Event"] = "pull_request"
+
+        response = self.client.post("/api/v1/github/webhook", content=body, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        with self.Session() as session:
+            pending_job = session.scalar(select(Job).where(Job.type == "update_github_pending"))
+            pull = session.scalar(select(PullRequest))
+        self.assertEqual(pending_job.payload_json["pull_request_id"], pull.id)
+
     def test_dashboard_links_repo_commit_and_pr_coverage_pages(self):
         with self.Session() as session:
             repository = Repository(
