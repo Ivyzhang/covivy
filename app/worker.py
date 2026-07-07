@@ -14,6 +14,7 @@ from app.services import (
     mark_job_failed,
     process_parse_upload_job,
     update_github_failure_status,
+    update_github_pending_coverage,
     update_github_pr,
 )
 
@@ -58,6 +59,21 @@ async def run_job(job: Job) -> None:
                 )
                 await update_github_failure_status(
                     session, settings, InstallationGitHubClient(token), pull, upload
+                )
+            elif attached.type == "update_github_pending":
+                pull = session.get(PullRequest, int(attached.payload_json["pull_request_id"]))
+                repo = session.get(Repository, pull.repository_id)
+                installation = (
+                    session.get(Installation, repo.installation_id) if repo.installation_id else None
+                )
+                if installation is None:
+                    raise RuntimeError("repository has no GitHub installation")
+                private_key = open(settings.github_private_key_path, "r", encoding="utf-8").read()
+                token = await GitHubClient(settings.github_app_id, private_key).installation_token(
+                    installation.github_installation_id
+                )
+                await update_github_pending_coverage(
+                    session, settings, InstallationGitHubClient(token), pull
                 )
             else:
                 raise RuntimeError("unknown job type: %s" % attached.type)

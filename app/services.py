@@ -500,6 +500,21 @@ def render_failure_pr_comment(message: str, url: str) -> str:
     )
 
 
+def render_pending_pr_comment(head_sha: str, url: str) -> str:
+    short_sha = head_sha[:12]
+    return "\n".join(
+        [
+            "<!-- coverage-service:pr-comment -->",
+            "",
+            "## Coverage Report",
+            "",
+            "Waiting for coverage report for head commit `%s`." % short_sha,
+            "",
+            "[View full report](%s)" % url,
+        ]
+    )
+
+
 async def update_github_pr(
     session: Session,
     settings: Settings,
@@ -568,6 +583,50 @@ async def update_github_pr(
     annotation.github_comment_id = comment_id
     annotation.status = state
     return annotation
+
+
+async def update_github_pending_coverage(
+    session: Session,
+    settings: Settings,
+    installation_client: InstallationGitHubClient,
+    pull_request: PullRequest,
+) -> None:
+    repository = session.get(Repository, pull_request.repository_id)
+    pr_payload = await installation_client.pull_request(
+        repository.owner, repository.name, pull_request.github_pr_number
+    )
+    pull_request = upsert_pull_request_from_github_payload(session, repository, pr_payload)
+    if latest_report_for_commit(session, repository.id, pull_request.head_sha) is not None:
+        return
+    target_url = "%s/repos/%s/%s/pulls/%s" % (
+        settings.public_base_url.rstrip("/"),
+        repository.owner,
+        repository.name,
+        pull_request.github_pr_number,
+    )
+    description = "Waiting for coverage report for head %s" % pull_request.head_sha[:12]
+    if settings.github_commit_status_enabled:
+        await installation_client.create_status(
+            repository.owner,
+            repository.name,
+            pull_request.head_sha,
+            "pending",
+            description,
+            target_url,
+        )
+    annotation = session.scalar(
+        select(PrAnnotation)
+        .where(PrAnnotation.pull_request_id == pull_request.id)
+        .order_by(PrAnnotation.updated_at.desc())
+        .limit(1)
+    )
+    await installation_client.upsert_pr_comment(
+        repository.owner,
+        repository.name,
+        pull_request.github_pr_number,
+        render_pending_pr_comment(pull_request.head_sha, target_url),
+        annotation.github_comment_id if annotation else None,
+    )
 
 
 async def update_github_failure_status(
