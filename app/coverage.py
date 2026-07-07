@@ -250,10 +250,8 @@ def compute_patch_coverage(
         file_covered = 0
         file_total = 0
         for line_number in changed_lines:
-            if line_number not in hits_by_line:
-                continue
             file_total += 1
-            if hits_by_line[line_number] > 0:
+            if hits_by_line.get(line_number, 0) > 0:
                 file_covered += 1
         covered += file_covered
         total += file_total

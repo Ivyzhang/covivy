@@ -18,6 +18,7 @@ from app.models import (
     Installation,
     Job,
     PrAnnotation,
+    PrFileAnnotation,
     PullRequest,
     Repository,
     Upload,
@@ -106,6 +107,7 @@ class ServiceTests(unittest.TestCase):
             public_base_url="https://coverage.example",
             upload_token_pepper="pepper",
             github_webhook_secret="secret",
+            github_commit_status_enabled=True,
             patch_coverage_minimum=0.8,
         )
 
@@ -493,6 +495,9 @@ class ServiceTests(unittest.TestCase):
             session.commit()
 
             stored = session.get(PrAnnotation, annotation.id)
+            stored_file = session.scalar(
+                select(PrFileAnnotation).where(PrFileAnnotation.annotation_id == stored.id)
+            )
 
         self.assertEqual(fake.statuses[0]["state"], "failure")
         self.assertEqual(fake.statuses[0]["context"], "coverage/patch")
@@ -500,9 +505,14 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("| Metric | Covered | Coverage |", fake.comments[0]["body"])
         self.assertIn("| Covered changed lines | 2 / 3 | 66.67% |", fake.comments[0]["body"])
         self.assertIn("| Project coverage | 2 / 3 | 66.67% |", fake.comments[0]["body"])
-        self.assertIn("| src/api.py | 2 / 3 | 66.67% |", fake.comments[0]["body"])
+        self.assertIn("Changed file coverage", fake.comments[0]["body"])
+        self.assertIn("/repos/octo/demo/pulls/7/files", fake.comments[0]["body"])
+        self.assertNotIn("| src/api.py | 2 / 3 | 66.67% |", fake.comments[0]["body"])
         self.assertEqual(stored.patch_covered_lines, 2)
         self.assertEqual(stored.patch_total_lines, 3)
+        self.assertEqual(stored_file.path, "src/api.py")
+        self.assertEqual(stored_file.patch_covered_lines, 2)
+        self.assertEqual(stored_file.patch_total_lines, 3)
 
     def test_render_pr_comment_includes_unmatched_warnings(self):
         from app.coverage import PatchCoverageResult
