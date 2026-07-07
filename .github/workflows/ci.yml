@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  COVIVY_BASE_URL: ${{ vars.COVIVY_BASE_URL }}
+  COVIVY_UPLOAD_TOKEN: ${{ secrets.COVIVY_UPLOAD_TOKEN }}
+
+jobs:
+  test:
+    name: Lint, test, and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Check syntax and lint
+        run: python -m ruff check app tests scripts alembic
+
+      - name: Run tests with coverage
+        run: |
+          python -m coverage run -m unittest discover -s tests
+          python -m coverage report
+          python -m coverage xml -o coverage.xml
+
+      - name: Upload coverage to covivy
+        if: github.event_name == 'pull_request' && env.COVIVY_UPLOAD_TOKEN != '' && env.COVIVY_BASE_URL != ''
+        uses: ./upload-action
+        with:
+          token: ${{ env.COVIVY_UPLOAD_TOKEN }}
+          base-url: ${{ env.COVIVY_BASE_URL }}
+          coverage-file: coverage.xml
+          format: cobertura

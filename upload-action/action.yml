@@ -1,0 +1,36 @@
+name: Upload coverage to covivy
+description: Upload Cobertura or LCOV coverage reports to a covivy server
+
+inputs:
+  token:
+    description: covivy repository upload token
+    required: true
+  base-url:
+    description: covivy server base URL
+    required: true
+  coverage-file:
+    description: Coverage report path
+    required: false
+    default: coverage.xml
+  format:
+    description: Coverage format, cobertura or lcov
+    required: false
+    default: cobertura
+  uploader:
+    description: Uploader name
+    required: false
+    default: github-actions
+
+runs:
+  using: composite
+  steps:
+    - name: Upload coverage
+      shell: bash
+      env:
+        COVIVY_UPLOAD_TOKEN: ${{ inputs.token }}
+        COVIVY_BASE_URL: ${{ inputs.base-url }}
+      run: |
+        bash "$GITHUB_ACTION_PATH/../scripts/upload_coverage_to_covivy.sh" \
+          --coverage-file "${{ inputs.coverage-file }}" \
+          --format "${{ inputs.format }}" \
+          --uploader "${{ inputs.uploader }}"

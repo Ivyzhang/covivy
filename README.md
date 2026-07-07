@@ -126,6 +126,19 @@ if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
 It requires `curl` and `jq`, both available on GitHub-hosted Ubuntu runners.
 Use `COVIVY_UPLOAD_TOKEN` for the repository upload token returned by covivy.
 
+You can also use the bundled composite action from another repository:
+
+```yaml
+- name: Upload coverage to covivy
+  if: github.event_name == 'pull_request'
+  uses: Ivyzhang/covivy/upload-action@main
+  with:
+    token: ${{ secrets.COVIVY_UPLOAD_TOKEN }}
+    base-url: ${{ vars.COVIVY_BASE_URL }}
+    coverage-file: coverage.xml
+    format: cobertura
+```
+
 ## Upload contract
 
 ```bash

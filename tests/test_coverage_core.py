@@ -1,7 +1,5 @@
 import hmac
-import tempfile
 import unittest
-from pathlib import Path
 
 from app.coverage import (
     compute_patch_coverage,
