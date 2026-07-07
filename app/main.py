@@ -372,13 +372,15 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
     patch_html = "<p>No patch coverage computed yet.</p>"
     if annotation is not None:
         patch_html = (
-            "<table><tr><th>Metric</th><th>Result</th></tr>"
-            "<tr><td>Patch coverage</td><td>{patch}</td></tr>"
-            "<tr><td>Covered changed lines</td><td>{lines}</td></tr>"
-            "<tr><td>Status</td><td>{status}</td></tr></table>"
+            "<table><tr><th>Metric</th><th>Covered</th><th>Coverage</th></tr>"
+            "<tr><td>Covered changed lines</td><td>{patch_lines}</td><td>{patch}</td></tr>"
+            "<tr><td>Project coverage</td><td>{project_lines}</td><td>{project}</td></tr>"
+            "<tr><td>Status</td><td colspan=\"2\">{status}</td></tr></table>"
         ).format(
             patch=percent(annotation.patch_line_rate),
-            lines="%s / %s" % (annotation.patch_covered_lines, annotation.patch_total_lines),
+            patch_lines="%s / %s" % (annotation.patch_covered_lines, annotation.patch_total_lines),
+            project=percent(report.line_rate),
+            project_lines="%s / %s" % (report.covered_lines, report.total_lines),
             status=annotation.status,
         )
     return HTMLResponse(
