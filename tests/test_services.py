@@ -496,9 +496,10 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(fake.statuses[0]["state"], "failure")
         self.assertEqual(fake.statuses[0]["context"], "coverage/patch")
         self.assertIn("66.67%", fake.statuses[0]["description"])
-        self.assertIn("Patch coverage | 2 / 3, (66.67%)", fake.comments[0]["body"])
-        self.assertIn("Project coverage | 2 / 3, (66.67%)", fake.comments[0]["body"])
-        self.assertIn("src/api.py | 2 / 3, (66.67%)", fake.comments[0]["body"])
+        self.assertIn("| Metric | Covered | Coverage |", fake.comments[0]["body"])
+        self.assertIn("| Covered changed lines | 2 / 3 | 66.67% |", fake.comments[0]["body"])
+        self.assertIn("| Project coverage | 2 / 3 | 66.67% |", fake.comments[0]["body"])
+        self.assertIn("| src/api.py | 2 / 3 | 66.67% |", fake.comments[0]["body"])
         self.assertEqual(stored.patch_covered_lines, 2)
         self.assertEqual(stored.patch_total_lines, 3)
 
@@ -520,8 +521,8 @@ class ServiceTests(unittest.TestCase):
             url="https://coverage.example/repos/octo/demo/pulls/7",
         )
 
-        self.assertIn("Patch coverage | 0 / 0, (100.00%)", body)
-        self.assertIn("Project coverage | 14 / 17, (82.35%)", body)
+        self.assertIn("Covered changed lines | 0 / 0 | 100.00%", body)
+        self.assertIn("Project coverage | 14 / 17 | 82.35%", body)
         self.assertIn("No coverable changed lines found.", body)
         self.assertIn("docs/readme.md did not match any coverage file", body)
 

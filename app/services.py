@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.coverage import CoverageReport, compute_patch_coverage, format_coverage, parse_report
+from app.coverage import CoverageReport, compute_patch_coverage, parse_report
 from app.github import InstallationGitHubClient, changed_lines_from_pull_files
 from app.models import (
     Account,
@@ -417,27 +417,52 @@ def render_pr_comment(
     url: str,
 ) -> str:
     status = "passed" if result.patch_line_rate >= target else "failed"
+
+    def coverage_percent(covered: int, total: int) -> str:
+        rate = 1.0 if total == 0 else covered / total
+        return "%.2f%%" % (rate * 100)
+
+    def covered_count(covered: int, total: int) -> str:
+        return "%s / %s" % (covered, total)
+
     lines = [
         "<!-- coverage-service:pr-comment -->",
         "",
         "## Coverage Report",
         "",
-        "| Metric | Coverage |",
-        "| --- | ---: |",
-        "| Patch coverage | %s |"
-        % format_coverage(result.patch_covered_lines, result.patch_total_lines),
-        "| Project coverage | %s |"
-        % format_coverage(project_covered_lines, project_total_lines),
+        "| Metric | Covered | Coverage |",
+        "| --- | ---: | ---: |",
+        "| Covered changed lines | %s | %s |"
+        % (
+            covered_count(result.patch_covered_lines, result.patch_total_lines),
+            coverage_percent(result.patch_covered_lines, result.patch_total_lines),
+        ),
+        "| Project coverage | %s | %s |"
+        % (
+            covered_count(project_covered_lines, project_total_lines),
+            coverage_percent(project_covered_lines, project_total_lines),
+        ),
         "",
     ]
     if result.files:
-        lines.extend(["### Changed files", "", "| File | Patch coverage |", "| --- | ---: |"])
+        lines.extend(
+            [
+                "### Changed files",
+                "",
+                "| File | Covered | Coverage |",
+                "| --- | ---: | ---: |",
+            ]
+        )
         for file_result in result.files[:10]:
             lines.append(
-                "| %s | %s |"
+                "| %s | %s | %s |"
                 % (
                     file_result.path,
-                    format_coverage(
+                    covered_count(
+                        file_result.patch_covered_lines,
+                        file_result.patch_total_lines,
+                    ),
+                    coverage_percent(
                         file_result.patch_covered_lines,
                         file_result.patch_total_lines,
                     ),
