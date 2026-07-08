@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
+import subprocess
 import textwrap
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 
@@ -201,7 +204,48 @@ def parse_lcov(
     return CoverageReport(files=files)
 
 
+def parse_go_coverprofile(
+    payload: bytes, workspace_prefixes: Optional[Iterable[str]] = None
+) -> CoverageReport:
+    text = payload.decode("utf-8", errors="replace")
+    lines_by_file: Dict[str, Dict[int, int]] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("mode:"):
+            continue
+        match = _GO_COVER_RE.match(line)
+        if not match:
+            raise ValueError("invalid Go coverprofile record")
+        path = normalize_path(match.group("path"), workspace_prefixes)
+        start_line = int(match.group("start_line"))
+        end_line = int(match.group("end_line"))
+        count = int(match.group("count"))
+        file_lines = lines_by_file.setdefault(path, {})
+        for line_number in range(start_line, end_line + 1):
+            file_lines[line_number] = max(file_lines.get(line_number, 0), count)
+    return CoverageReport(
+        files=[
+            CoveredFile(
+                path=path,
+                lines=[
+                    CoveredLine(number=line_number, hits=hits)
+                    for line_number, hits in sorted(file_lines.items())
+                ],
+            )
+            for path, file_lines in lines_by_file.items()
+        ]
+    )
+
+
 _HUNK_RE = re.compile(r"@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
+_GO_COVER_RE = re.compile(
+    r"^(?P<path>.+):(?P<start_line>\d+)\.(?P<start_col>\d+),"
+    r"(?P<end_line>\d+)\.(?P<end_col>\d+)\s+"
+    r"(?P<statements>\d+)\s+(?P<count>\d+)$"
+)
+_TYPESCRIPT_ANALYZER = (
+    Path(__file__).resolve().parent.parent / "scripts" / "typescript_semantic_analyzer.mjs"
+)
 
 
 def parse_unified_diff_changed_lines(patch: str) -> Set[int]:
@@ -256,10 +300,182 @@ def is_test_path(path: str) -> bool:
     filename = parts[-1] if parts else normalized
     return (
         "tests" in parts
+        or "__tests__" in parts
+        or "testdata" in parts
         or filename.startswith("test_")
         or filename.endswith("_test.py")
         or filename.endswith("_tests.py")
+        or filename.endswith("_test.go")
+        or filename.endswith(".test.js")
+        or filename.endswith(".test.jsx")
+        or filename.endswith(".test.ts")
+        or filename.endswith(".test.tsx")
+        or filename.endswith(".spec.js")
+        or filename.endswith(".spec.jsx")
+        or filename.endswith(".spec.ts")
+        or filename.endswith(".spec.tsx")
     )
+
+
+def source_lines(source: str) -> Dict[int, str]:
+    if not source:
+        return {}
+    return {index: line for index, line in enumerate(source.splitlines(), start=1)}
+
+
+def non_code_lines_from_source(path: str, source: str) -> Set[int]:
+    lines = source_lines(source)
+    non_code: Set[int] = set()
+    in_block_comment = False
+    for line_number, line in lines.items():
+        stripped = line.strip()
+        if not stripped:
+            non_code.add(line_number)
+            continue
+        if in_block_comment:
+            non_code.add(line_number)
+            if "*/" in stripped:
+                in_block_comment = False
+                after = stripped.split("*/", 1)[1].strip()
+                if after:
+                    non_code.discard(line_number)
+            continue
+        if path.endswith(".py") and stripped.startswith("#"):
+            non_code.add(line_number)
+            continue
+        if path.endswith((".go", ".js", ".jsx", ".ts", ".tsx")):
+            if path.endswith(".go") and stripped in {"}", "{", "})", "};"}:
+                non_code.add(line_number)
+                continue
+            if stripped.startswith("//"):
+                non_code.add(line_number)
+                continue
+            if stripped.startswith("/*"):
+                if "*/" not in stripped or not stripped.split("*/", 1)[1].strip():
+                    non_code.add(line_number)
+                if "*/" not in stripped:
+                    in_block_comment = True
+                continue
+    return non_code
+
+
+def jsts_statement_coverage_from_source(
+    path: str,
+    source: str,
+    changed_lines: Set[int],
+    hits_by_line: Dict[int, int],
+) -> Dict[int, bool]:
+    if not path.endswith((".js", ".jsx", ".ts", ".tsx")) or not source:
+        return {}
+    spans: List[Tuple[int, int]] = []
+    stack: List[Tuple[str, int]] = []
+    pairs = {"(": ")", "[": "]"}
+    closing = {")", "]", "}"}
+    in_string: Optional[str] = None
+    escaped = False
+    in_block_comment = False
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        index = 0
+        while index < len(line):
+            char = line[index]
+            nxt = line[index : index + 2]
+            if in_block_comment:
+                if nxt == "*/":
+                    in_block_comment = False
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == in_string:
+                    in_string = None
+                index += 1
+                continue
+            if nxt == "//":
+                break
+            if nxt == "/*":
+                in_block_comment = True
+                index += 2
+                continue
+            if char in {"'", '"', "`"}:
+                in_string = char
+            elif char == "{":
+                previous = line[:index].rstrip()
+                if previous.endswith(("(", "[", "=", ":", ",", "return")):
+                    stack.append(("}", line_number))
+            elif char in pairs:
+                stack.append((pairs[char], line_number))
+            elif char in closing and stack:
+                expected, start_line = stack.pop()
+                if char == expected and start_line != line_number:
+                    spans.append((start_line, line_number))
+            index += 1
+    decisions: Dict[int, bool] = {}
+    for line_number in changed_lines:
+        containing_spans = [
+            span for span in spans if span[0] <= line_number <= span[1]
+        ]
+        for start, end in sorted(containing_spans, key=lambda span: (span[1] - span[0], span[0])):
+            statement_hits = [
+                hits
+                for statement_line, hits in hits_by_line.items()
+                if start <= statement_line <= end
+            ]
+            if statement_hits:
+                decisions[line_number] = any(hits > 0 for hits in statement_hits)
+                break
+    return decisions
+
+
+def typescript_semantic_analysis_from_source(
+    path: str,
+    source: str,
+    changed_lines: Set[int],
+    hits_by_line: Dict[int, int],
+) -> Tuple[Dict[int, bool], Set[int], bool]:
+    if not path.endswith((".js", ".jsx", ".ts", ".tsx")) or not source:
+        return {}, set(), False
+    if not _TYPESCRIPT_ANALYZER.exists():
+        return {}, set(), False
+    payload = {
+        "path": path,
+        "source": source,
+        "changedLines": sorted(changed_lines),
+        "hitsByLine": {str(line): hits for line, hits in hits_by_line.items()},
+    }
+    try:
+        completed = subprocess.run(
+            ["node", str(_TYPESCRIPT_ANALYZER)],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=10,
+        )
+        result = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return {}, set(), False
+    decisions = {
+        int(line): bool(covered)
+        for line, covered in (result.get("lineDecisions") or {}).items()
+    }
+    non_code_lines = {int(line) for line in result.get("nonCodeLines") or []}
+    return decisions, non_code_lines, True
+
+
+def semantic_statement_coverage_from_source(
+    path: str,
+    source: str,
+    changed_lines: Set[int],
+    hits_by_line: Dict[int, int],
+) -> Dict[int, bool]:
+    if path.endswith(".py"):
+        return python_statement_coverage_from_source(path, source, changed_lines, hits_by_line)
+    return {}
 
 
 def cover_multiline_python_statements(
@@ -375,13 +591,8 @@ def compute_patch_coverage(
             continue
         line_contents = changed_line_contents_by_file.get(path) or changed_line_contents_by_file.get(normalized_path) or {}
         source = source_by_file.get(path) or source_by_file.get(normalized_path) or ""
-        coverable_changed_lines = set(changed_lines)
-        if line_contents:
-            coverable_changed_lines = {
-                line_number
-                for line_number in changed_lines
-                if line_contents.get(line_number, "").strip()
-            }
+        source_content_by_line = source_lines(source)
+        non_code_lines = non_code_lines_from_source(normalized_path, source)
         covered_file = coverage_by_file.get(normalized_path)
         if covered_file is None:
             suffix_matches = [
@@ -393,25 +604,63 @@ def compute_patch_coverage(
                 unmatched_files.append(path)
                 warnings.append("%s matched multiple coverage files" % path)
                 continue
+        hits_by_line = (
+            {line.number: line.hits for line in covered_file.lines}
+            if covered_file is not None
+            else {}
+        )
+        typescript_line_decisions: Dict[int, bool] = {}
+        typescript_analyzer_available = False
+        if normalized_path.endswith((".js", ".jsx", ".ts", ".tsx")):
+            typescript_line_decisions, typescript_non_code_lines, typescript_analyzer_available = (
+                typescript_semantic_analysis_from_source(
+                    normalized_path,
+                    source,
+                    set(changed_lines),
+                    hits_by_line,
+                )
+            )
+            non_code_lines.update(typescript_non_code_lines)
+        coverable_changed_lines = set(changed_lines)
+        if line_contents or source_content_by_line:
+            coverable_changed_lines = {
+                line_number
+                for line_number in changed_lines
+                if (
+                    line_contents.get(line_number, source_content_by_line.get(line_number, "")).strip()
+                )
+                and line_number not in non_code_lines
+            }
         if covered_file is None:
             if coverable_changed_lines:
                 unmatched_files.append(path)
                 warnings.append("%s did not match any coverage file" % path)
             continue
-        hits_by_line = {line.number: line.hits for line in covered_file.lines}
         exactly_covered_lines = {
             line_number
             for line_number in coverable_changed_lines
             if hits_by_line.get(line_number, 0) > 0
         }
-        source_line_decisions = python_statement_coverage_from_source(
-            normalized_path,
-            source,
-            coverable_changed_lines,
-            hits_by_line,
-        )
-        if source_line_decisions:
-            coverable_changed_lines = set(source_line_decisions) | exactly_covered_lines
+        if normalized_path.endswith((".js", ".jsx", ".ts", ".tsx")):
+            source_line_decisions = {
+                line: covered
+                for line, covered in typescript_line_decisions.items()
+                if line in coverable_changed_lines
+            }
+            if not typescript_analyzer_available:
+                source_line_decisions = jsts_statement_coverage_from_source(
+                    normalized_path,
+                    source,
+                    coverable_changed_lines,
+                    hits_by_line,
+                )
+        else:
+            source_line_decisions = semantic_statement_coverage_from_source(
+                normalized_path,
+                source,
+                coverable_changed_lines,
+                hits_by_line,
+            )
         inferred_covered_lines = cover_multiline_python_statements(
             normalized_path,
             {line: line_contents[line] for line in coverable_changed_lines if line in line_contents},
@@ -455,4 +704,6 @@ def parse_report(format_name: str, payload: bytes) -> CoverageReport:
         return parse_cobertura(payload)
     if lowered == "lcov":
         return parse_lcov(payload)
+    if lowered in {"go-coverprofile", "go", "coverprofile"}:
+        return parse_go_coverprofile(payload)
     raise ValueError("unsupported coverage format: %s" % format_name)

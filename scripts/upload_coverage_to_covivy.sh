@@ -18,7 +18,7 @@ Common environment:
 
 Options:
   --coverage-file PATH  Defaults to coverage.xml
-  --format NAME         Defaults to cobertura
+  --format NAME         cobertura, lcov, or go-coverprofile. Defaults to cobertura
   --base-url URL        Overrides COVIVY_BASE_URL
   --repository OWNER/REPO
   --commit-sha SHA
@@ -157,6 +157,14 @@ if [[ ! -f "${coverage_file}" ]]; then
   echo "coverage file not found: ${coverage_file}" >&2
   exit 2
 fi
+case "${format_name}" in
+  cobertura|lcov|go-coverprofile|go|coverprofile)
+    ;;
+  *)
+    echo "unsupported coverage format: ${format_name}" >&2
+    exit 2
+    ;;
+esac
 
 if [[ "${dry_run}" == "true" ]]; then
   cat <<EOF

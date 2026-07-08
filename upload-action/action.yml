@@ -1,5 +1,5 @@
 name: Upload coverage to covivy
-description: Upload Cobertura or LCOV coverage reports to a covivy server
+description: Upload Cobertura, LCOV, or Go coverprofile reports to a covivy server
 
 inputs:
   token:
@@ -13,7 +13,7 @@ inputs:
     required: false
     default: coverage.xml
   format:
-    description: Coverage format, cobertura or lcov
+    description: Coverage format, cobertura, lcov, or go-coverprofile
     required: false
     default: cobertura
   uploader:

@@ -91,6 +91,67 @@ class UploadCoverageShellScriptTests(unittest.TestCase):
         self.assertIn("branch=master", result.stdout)
         self.assertIn("format=cobertura", result.stdout)
 
+    def test_dry_run_accepts_go_coverprofile_format(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            coverage_path = Path(tmpdir) / "coverage.out"
+            coverage_path.write_text("mode: set\n")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPT),
+                    "--dry-run",
+                    "--coverage-file",
+                    str(coverage_path),
+                    "--format",
+                    "go-coverprofile",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "COVIVY_UPLOAD_TOKEN": "cov_secret",
+                    "GITHUB_EVENT_NAME": "push",
+                    "GITHUB_REPOSITORY": "octo/demo",
+                    "GITHUB_SHA": "abc123",
+                    "GITHUB_REF_NAME": "master",
+                },
+            )
+
+        self.assertIn("format=go-coverprofile", result.stdout)
+
+    def test_rejects_unknown_coverage_format(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            coverage_path = Path(tmpdir) / "coverage.txt"
+            coverage_path.write_text("coverage")
+
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPT),
+                    "--dry-run",
+                    "--coverage-file",
+                    str(coverage_path),
+                    "--format",
+                    "unknown",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+                env={
+                    **os.environ,
+                    "COVIVY_UPLOAD_TOKEN": "cov_secret",
+                    "GITHUB_EVENT_NAME": "push",
+                    "GITHUB_REPOSITORY": "octo/demo",
+                    "GITHUB_SHA": "abc123",
+                    "GITHUB_REF_NAME": "master",
+                },
+            )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported coverage format", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
