@@ -173,6 +173,10 @@ def summary_metrics_html(
     )
 
 
+def file_diff_anchor(file: PrFileAnnotation) -> str:
+    return "file-coverage-%s" % file.id
+
+
 def file_diff_html(file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation], target: float) -> str:
     missing = file.patch_total_lines - file.patch_covered_lines
     line_parts = []
@@ -193,7 +197,7 @@ def file_diff_html(file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation]
     if not line_parts:
         line_parts.append('<div class="diff-line"><div></div><div></div><code class="diff-code">No changed line coverage available.</code></div>')
     return (
-        '<section class="file-diff-report">'
+        '<section id="{anchor}" class="file-diff-report">'
         '<h3>{path} line coverage</h3>'
         '<div class="file-diff-header">'
         '<div class="file-name">{path}</div>'
@@ -205,6 +209,7 @@ def file_diff_html(file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation]
         '<div class="diff-hunk">Changed lines in this file</div>'
         "{lines}</section>"
     ).format(
+        anchor=file_diff_anchor(file),
         path=escape(file.path),
         missing=missing,
         patch=percent(file.patch_line_rate),
@@ -655,8 +660,9 @@ def pull_file_dashboard(owner: str, repo: str, number: int, session: Session = D
                 .order_by(PrFileLineAnnotation.line_number)
             ).all()
             row_parts.append(
-                "<tr><td>{path}</td><td>{lines}</td><td>{coverage} {icon}</td>"
+                '<tr><td><a href="#{anchor}">{path}</a></td><td>{lines}</td><td>{coverage} {icon}</td>'
                 "<td>{missing}</td><td>{status}</td></tr>".format(
+                    anchor=file_diff_anchor(file),
                     path=escape(file.path),
                     lines="%s / %s" % (file.patch_covered_lines, file.patch_total_lines),
                     coverage=percent(file.patch_line_rate),
