@@ -531,6 +531,81 @@ end_of_record
             [(1, False), (3, True)],
         )
 
+    def test_compute_patch_coverage_counts_side_effect_typescript_imports(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                'import "./polyfill";',
+                "export const active = true;",
+            ]
+        )
+        changed_contents = {
+            1: 'import "./polyfill";',
+            2: "export const active = true;",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 1)
+        self.assertEqual(result.patch_total_lines, 2)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(1, False), (2, True)],
+        )
+
+    def test_compute_patch_coverage_counts_runtime_typescript_namespace_and_enum_members(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+DA:6,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "namespace RuntimeConfig {",
+                "  export const enabled = true;",
+                "}",
+                "",
+                "enum Mode {",
+                "  Active = 1,",
+                "}",
+                "",
+                "declare namespace AmbientConfig {",
+                "  const enabled: boolean;",
+                "}",
+            ]
+        )
+        changed_contents = {
+            2: "  export const enabled = true;",
+            6: "  Active = 1,",
+            10: "  const enabled: boolean;",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 2)
+        self.assertEqual(result.patch_total_lines, 2)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(2, True), (6, True)],
+        )
+
     def test_compute_patch_coverage_does_not_cover_missed_typescript_variable_declarator(self):
         report = parse_lcov(
             b"""SF:src/client.ts

@@ -70,7 +70,7 @@ function addCommentAndBlankLines(source, nonCodeLines) {
 
 function isTypeOnlyImport(node) {
   if (!ts.isImportDeclaration(node)) return false;
-  if (!node.importClause) return true;
+  if (!node.importClause) return false;
   return node.importClause.isTypeOnly;
 }
 
@@ -79,12 +79,28 @@ function isTypeOnlyExport(node) {
   return node.isTypeOnly;
 }
 
+function hasDeclareModifier(node) {
+  return Boolean(
+    node.modifiers &&
+      node.modifiers.some(modifier => modifier.kind === ts.SyntaxKind.DeclareKeyword)
+  );
+}
+
+function isInAmbientDeclaration(node) {
+  let current = node;
+  while (current) {
+    if (hasDeclareModifier(current)) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 function isNonRuntimeDeclaration(node) {
   return (
     ts.isInterfaceDeclaration(node) ||
     ts.isTypeAliasDeclaration(node) ||
-    ts.isModuleDeclaration(node) ||
-    ts.isEnumMember(node) ||
+    (ts.isModuleDeclaration(node) && hasDeclareModifier(node)) ||
+    (ts.isEnumMember(node) && isInAmbientDeclaration(node)) ||
     isTypeOnlyImport(node) ||
     isTypeOnlyExport(node)
   );
@@ -93,6 +109,8 @@ function isNonRuntimeDeclaration(node) {
 function isCoverageUnit(node) {
   return (
     ts.isImportDeclaration(node) ||
+    ts.isModuleDeclaration(node) ||
+    ts.isEnumMember(node) ||
     ts.isExpressionStatement(node) ||
     ts.isReturnStatement(node) ||
     ts.isVariableDeclaration(node) ||
