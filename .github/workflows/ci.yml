@@ -62,13 +62,15 @@ jobs:
           npm ci
 
       - name: Run tests with coverage data
-        run: python -m coverage run -m unittest discover -s tests
+        run: |
+          mkdir -p coverage-data
+          python -m coverage run --data-file coverage-data/coverage.db -m unittest discover -s tests
 
       - name: Upload coverage data
         uses: actions/upload-artifact@v4
         with:
           name: coverage-data
-          path: .coverage
+          path: coverage-data/coverage.db
           if-no-files-found: error
 
   generate-coverage-report:
@@ -92,11 +94,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: coverage-data
+          path: coverage-data
 
       - name: Generate coverage report
         run: |
-          python -m coverage report
-          python -m coverage xml -o coverage.xml
+          python -m coverage report --data-file coverage-data/coverage.db
+          python -m coverage xml --data-file coverage-data/coverage.db -o coverage.xml
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

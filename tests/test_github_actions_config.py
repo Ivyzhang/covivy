@@ -25,9 +25,21 @@ class GitHubActionsConfigTests(unittest.TestCase):
 
         self.assertIn("pull_request:", text)
         self.assertIn("push:", text)
+        self.assertIn('name: "Static Check: Lint"', text)
+        self.assertIn("name: Test with Coverage", text)
+        self.assertIn("name: Generate Coverage Report", text)
+        self.assertIn("name: Covivy Coverage", text)
+        self.assertIn("needs: test-with-coverage", text)
+        self.assertIn("needs: generate-coverage-report", text)
         self.assertIn("python -m ruff check", text)
-        self.assertIn("python -m coverage run -m unittest discover -s tests", text)
-        self.assertIn("python -m coverage xml", text)
+        self.assertIn(
+            "python -m coverage run --data-file coverage-data/coverage.db "
+            "-m unittest discover -s tests",
+            text,
+        )
+        self.assertIn("path: coverage-data/coverage.db", text)
+        self.assertIn("python -m coverage xml --data-file coverage-data/coverage.db", text)
+        self.assertIn("path: coverage.xml", text)
         self.assertIn("uses: ./upload-action", text)
         self.assertIn(
             "if: (github.event_name == 'pull_request' || github.event_name == 'push')",
