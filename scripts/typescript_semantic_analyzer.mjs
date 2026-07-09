@@ -59,11 +59,13 @@ function addCommentAndBlankLines(source, nonCodeLines) {
       nonCodeLines.add(lineNumber);
       return;
     }
-    if (trimmed.startsWith("/*")) {
-      if (!trimmed.includes("*/") || !trimmed.split("*/", 2)[1].trim()) {
-        nonCodeLines.add(lineNumber);
-      }
-      if (!trimmed.includes("*/")) inBlockComment = true;
+    const blockStart = line.indexOf("/*");
+    if (blockStart !== -1) {
+      const before = line.slice(0, blockStart).trim();
+      const blockEnd = line.indexOf("*/", blockStart + 2);
+      const after = blockEnd !== -1 ? line.slice(blockEnd + 2).trim() : "";
+      if (!before && (blockEnd === -1 || !after)) nonCodeLines.add(lineNumber);
+      if (blockEnd === -1) inBlockComment = true;
     }
   });
 }
