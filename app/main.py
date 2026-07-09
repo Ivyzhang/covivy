@@ -52,7 +52,6 @@ from app.services import (
 from app.views.coverage_dashboard import (
     app_page_html,
     percent,
-    render_pull_file_page,
     render_pull_files_page,
     render_pull_summary_page,
 )
@@ -1089,18 +1088,43 @@ def pull_single_file_dashboard(
         )
     if annotation is None:
         raise HTTPException(status_code=404, detail="changed file coverage not found")
-    file = session.scalar(
-        select(PrFileAnnotation).where(
-            PrFileAnnotation.annotation_id == annotation.id,
-            PrFileAnnotation.path == file_path,
+    target = get_settings().patch_coverage_minimum
+    file_rows = session.scalars(
+        select(PrFileAnnotation)
+        .where(PrFileAnnotation.annotation_id == annotation.id)
+    ).all()
+    file_rows = sorted(
+        file_rows,
+        key=lambda file: (
+            file.patch_line_rate >= target,
+            file.patch_line_rate,
+            -(file.patch_total_lines - file.patch_covered_lines),
+            file.path,
+        ),
+    )
+    file_line_rows: list[tuple[PrFileAnnotation, list[PrFileLineAnnotation]]] = []
+    selected_file = None
+    for file in file_rows:
+        line_rows = session.scalars(
+            select(PrFileLineAnnotation)
+            .where(PrFileLineAnnotation.file_annotation_id == file.id)
+            .order_by(PrFileLineAnnotation.line_number)
+        ).all()
+        file_line_rows.append((file, line_rows))
+        if file.path == file_path:
+            selected_file = file
+    if selected_file is None:
+        raise HTTPException(status_code=404, detail="changed file coverage not found")
+    base_report = latest_report_for_commit(session, repository.id, pull.base_sha) if pull.base_sha else None
+    return HTMLResponse(
+        render_pull_files_page(
+            repository,
+            pull,
+            report,
+            base_report,
+            annotation,
+            file_line_rows,
+            target,
+            selected_path=file_path,
         )
     )
-    if file is None:
-        raise HTTPException(status_code=404, detail="changed file coverage not found")
-    line_rows = session.scalars(
-        select(PrFileLineAnnotation)
-        .where(PrFileLineAnnotation.file_annotation_id == file.id)
-        .order_by(PrFileLineAnnotation.line_number)
-    ).all()
-    target = get_settings().patch_coverage_minimum
-    return HTMLResponse(render_pull_file_page(repository, pull, file, line_rows, target))

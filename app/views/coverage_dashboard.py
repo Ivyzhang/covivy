@@ -39,8 +39,8 @@ def signed_percent(value: Optional[float]) -> str:
 
 def app_page_html(title: str, body: str) -> str:
     return (
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
         "<title>" + escape(title) + "</title>"
         "<style>"
         ":root{--bg:#f4f6fb;--card:#fff;--ink:#16143d;--muted:#5e6175;--line:#d8deea;"
@@ -100,8 +100,8 @@ def metric_card(label: str, value: str, sub: str = "", class_name: str = "") -> 
 def pr_header(repository: Repository, pull: PullRequest) -> str:
     return (
         '<div><p class="eyebrow">Coverage report</p>'
-        '<h1>{repo} · PR #{number}: {title}</h1>'
-        '<p>{state}</p></div>'
+        "<h1>{repo} · PR #{number}: {title}</h1>"
+        "<p>{state}</p></div>"
     ).format(
         repo=escape(repository.full_name),
         number=pull.github_pr_number,
@@ -130,16 +130,18 @@ def summary_metrics_html(
         )
         patch_class = "pass" if patch_passed else "fail"
     project_delta = report.line_rate - base_report.line_rate if base_report is not None else None
-    project_delta_class = "positive" if project_delta is not None and project_delta >= 0 else "negative"
-    return (
-        '<div class="metric-grid">'
-        "{patch_card}{project_card}{change_card}"
-        "</div>"
-    ).format(
+    project_delta_class = (
+        "positive" if project_delta is not None and project_delta >= 0 else "negative"
+    )
+    return ('<div class="metric-grid">{patch_card}{project_card}{change_card}</div>').format(
         patch_card=metric_card("Changed lines", patch_value, patch_sub, patch_class),
         project_card=metric_card(
             "Project coverage",
-            "%s %s" % (percent(report.line_rate), trend_icon(report.line_rate, base_report.line_rate if base_report else None)),
+            "%s %s"
+            % (
+                percent(report.line_rate),
+                trend_icon(report.line_rate, base_report.line_rate if base_report else None),
+            ),
             "%s / %s covered lines" % (report.covered_lines, report.total_lines),
         ),
         change_card=metric_card(
@@ -157,7 +159,9 @@ def file_diff_anchor(file: PrFileAnnotation) -> str:
     return "file-coverage-%s" % file.id
 
 
-def file_diff_html(file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation], target: float) -> str:
+def file_diff_html(
+    file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation], target: float
+) -> str:
     missing = file.patch_total_lines - file.patch_covered_lines
     line_parts = []
     for line in line_rows:
@@ -170,15 +174,19 @@ def file_diff_html(file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation]
                 line_number=line.line_number,
                 mark="+" if line.covered else "!",
                 content=escape(
-                    line.line_content if line.line_content is not None else "Line %s" % line.line_number
+                    line.line_content
+                    if line.line_content is not None
+                    else "Line %s" % line.line_number
                 ),
             )
         )
     if not line_parts:
-        line_parts.append('<div class="diff-line"><div></div><div></div><code class="diff-code">No changed line coverage available.</code></div>')
+        line_parts.append(
+            '<div class="diff-line"><div></div><div></div><code class="diff-code">No changed line coverage available.</code></div>'
+        )
     return (
         '<section id="{anchor}" class="file-diff-report">'
-        '<h3>{path} line coverage</h3>'
+        "<h3>{path} line coverage</h3>"
         '<div class="file-diff-header">'
         '<div class="file-name">{path}</div>'
         '<div class="num">{missing}</div>'
@@ -246,23 +254,29 @@ def render_pull_files_page(
     annotation: Optional[PrAnnotation],
     file_line_rows: list[tuple[PrFileAnnotation, list[PrFileLineAnnotation]]],
     target: float,
+    selected_path: Optional[str] = None,
 ) -> str:
     summary_html = summary_metrics_html(annotation, report, base_report, target)
     row_parts = []
-    diff_parts = []
     file_count = 0
     failing_count = 0
     missing_count = 0
+    selected: Optional[tuple[PrFileAnnotation, list[PrFileLineAnnotation]]] = None
     for file, line_rows in file_line_rows:
+        if selected is None or file.path == selected_path:
+            selected = (file, line_rows)
         file_count += 1
         missing_for_file = file.patch_total_lines - file.patch_covered_lines
         missing_count += missing_for_file
         if file.patch_line_rate < target:
             failing_count += 1
         row_parts.append(
-            '<tr><td><a href="#{anchor}">{path}</a></td><td>{lines}</td><td>{coverage} {icon}</td>'
+            '<tr><td><a href="/repos/{owner}/{repo}/pulls/{number}/files/{path_href}">{path}</a></td><td>{lines}</td><td>{coverage} {icon}</td>'
             "<td>{missing}</td><td>{status}</td></tr>".format(
-                anchor=file_diff_anchor(file),
+                owner=escape(repository.owner),
+                repo=escape(repository.name),
+                number=pull.github_pr_number,
+                path_href=escape(file.path),
                 path=escape(file.path),
                 lines="%s / %s" % (file.patch_covered_lines, file.patch_total_lines),
                 coverage=percent(file.patch_line_rate),
@@ -271,13 +285,16 @@ def render_pull_files_page(
                 status="passed" if file.patch_line_rate >= target else "failed",
             )
         )
-        diff_parts.append(file_diff_html(file, line_rows, target))
-    rows = "\n".join(row_parts) or '<tr><td colspan="5">No changed file coverage available.</td></tr>'
+    rows = (
+        "\n".join(row_parts) or '<tr><td colspan="5">No changed file coverage available.</td></tr>'
+    )
+    diff_sections = (
+        file_diff_html(selected[0], selected[1], target)
+        if selected is not None
+        else "<p>No changed file coverage available.</p>"
+    )
     passing_count = max(file_count - failing_count, 0)
-    files_summary = (
-        '<div class="files-summary">'
-        "{files}{passing}{failing}{missing}</div>"
-    ).format(
+    files_summary = ('<div class="files-summary">{files}{passing}{failing}{missing}</div>').format(
         files=metric_card("Files changed", str(file_count)),
         passing=metric_card("Files passing target", str(passing_count), class_name="pass"),
         failing=metric_card("Files failing target", str(failing_count), class_name="fail"),
@@ -289,9 +306,9 @@ def render_pull_files_page(
         '<section class="dashboard-hero">{header}</section>'
         '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
         '<span class="tab active">Changed files</span></nav>'
-        "{summary}<div class=\"coverage-split\"><section class=\"dashboard-card\"><h2>Changed file coverage</h2>{files_summary}"
+        '{summary}<div class="coverage-split"><section class="dashboard-card"><h2>Changed file coverage</h2>{files_summary}'
         '<table class="changed-files-table"><tr><th>File</th><th>Changed lines</th>'
-        '<th>Patch coverage</th><th>Missing</th><th>Status</th></tr>{rows}</table></section>'
+        "<th>Patch coverage</th><th>Missing</th><th>Status</th></tr>{rows}</table></section>"
         '<section class="dashboard-card coverage-details"><h2>File coverage details</h2>{diff_sections}</section></div>'
         '<a class="back-to-top" href="#top">Back to top</a>'
         "</main>"
@@ -304,40 +321,6 @@ def render_pull_files_page(
         summary=summary_html,
         files_summary=files_summary,
         rows=rows,
-        diff_sections="\n".join(diff_parts) or '<p>No changed file coverage available.</p>',
+        diff_sections=diff_sections,
     )
     return app_page_html("PR #%s changed files" % pull.github_pr_number, body)
-
-
-def render_pull_file_page(
-    repository: Repository,
-    pull: PullRequest,
-    file: PrFileAnnotation,
-    line_rows: list[PrFileLineAnnotation],
-    target: float,
-) -> str:
-    body = (
-        '<main id="top" class="app-shell">'
-        "{app_header}"
-        '<section class="dashboard-hero">{header}</section>'
-        '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
-        '<a class="tab" href="/repos/{owner}/{repo}/pulls/{number}/files">Changed files</a>'
-        '<span class="tab active">File view</span></nav>'
-        '<section class="dashboard-card"><h2>{path} line coverage</h2>'
-        '<div class="metric-grid">{metric}</div></section>'
-        '<section class="dashboard-card">{diff}</section></main>'
-    ).format(
-        app_header=report_app_header(),
-        header=pr_header(repository, pull),
-        owner=escape(repository.owner),
-        repo=escape(repository.name),
-        number=pull.github_pr_number,
-        path=escape(file.path),
-        metric=metric_card(
-            "Patch coverage",
-            "%s %s" % (percent(file.patch_line_rate), status_icon(file.patch_line_rate >= target)),
-            "%s / %s changed lines" % (file.patch_covered_lines, file.patch_total_lines),
-        ),
-        diff=file_diff_html(file, line_rows, target),
-    )
-    return app_page_html("%s coverage" % file.path, body)
