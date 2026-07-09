@@ -39,9 +39,11 @@ jobs:
       - name: Check syntax and lint
         run: python -m ruff check app tests scripts alembic
 
-      - name: Run tests with coverage
+      - name: Run tests with coverage data
+        run: python -m coverage run -m unittest discover -s tests
+
+      - name: Generate coverage report
         run: |
-          python -m coverage run -m unittest discover -s tests
           python -m coverage report
           python -m coverage xml -o coverage.xml
 
