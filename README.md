@@ -2,6 +2,8 @@
 
 Self-hosted, Python-first coverage service inspired by Codecov.
 
+Built for small teams that want PR coverage feedback from their own infrastructure.
+
 ## Local run
 
 ### Docker Postgres + local app and worker
