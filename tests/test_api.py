@@ -467,6 +467,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(files_response.status_code, 200)
         self.assertIn("app-shell", files_response.text)
         self.assertIn("dashboard-card", files_response.text)
+        self.assertIn("coverage-split", files_response.text)
+        self.assertIn("back-to-top", files_response.text)
         self.assertIn("Changed file coverage", files_response.text)
         self.assertIn("files-summary", files_response.text)
         self.assertIn("changed-files-table", files_response.text)
