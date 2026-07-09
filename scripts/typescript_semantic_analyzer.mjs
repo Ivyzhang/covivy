@@ -62,10 +62,12 @@ function addCommentAndBlankLines(source, nonCodeLines) {
     if (!line.trim()) nonCodeLines.add(i + 1);
   });
 
-  // Use TypeScript's scanner to find comment tokens. This correctly skips
-  // "/*" or "*/" that appear inside string/template literals or regular
-  // expressions, preventing false inBlockComment flips.
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false);
+  // Use TypeScript's scanner to find comment tokens. skipTrivia=false is
+  // required so that comment tokens are returned; without it the scanner
+  // silently skips them. Using the scanner (rather than indexOf) correctly
+  // ignores "/*" or "*/" that appear inside string/template literals or
+  // regular expressions, preventing false inBlockComment flips.
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, /* skipTrivia */ false);
   scanner.setText(source);
   const codeLines = new Set();
   let kind;
