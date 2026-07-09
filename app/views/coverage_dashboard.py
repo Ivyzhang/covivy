@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from html import escape
 from typing import Optional
 
@@ -160,32 +161,79 @@ def file_diff_anchor(file: PrFileAnnotation) -> str:
     return "file-coverage-%s" % file.id
 
 
+def semantic_context_ranges(
+    path: str, source: str, changed_lines: set[int], context: int = 3
+) -> list[tuple[int, int]]:
+    if not changed_lines:
+        return []
+    source_lines = source.splitlines()
+    max_line = len(source_lines)
+    if max_line == 0:
+        return []
+    ranges = [
+        (max(1, line - context), min(max_line, line + context)) for line in changed_lines
+        if line <= max_line
+    ]
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            tree = None
+        if tree is not None:
+            for node in ast.walk(tree):
+                start = getattr(node, "lineno", None)
+                end = getattr(node, "end_lineno", None)
+                if start is None or end is None:
+                    continue
+                if changed_lines.intersection(range(start, end + 1)):
+                    ranges.append((max(1, start), min(max_line, end)))
+    ranges.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if not merged or start > merged[-1][1] + 1:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
 def file_diff_html(
     file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation], target: float
 ) -> str:
     missing = file.patch_total_lines - file.patch_covered_lines
     line_parts = []
     changed_by_line = {line.line_number: line for line in line_rows}
-    if file.source_content:
+    source_ranges = (
+        semantic_context_ranges(file.path, file.source_content, set(changed_by_line))
+        if file.source_content
+        else []
+    )
+    if file.source_content and source_ranges:
         source_lines = file.source_content.splitlines()
-        for index, content in enumerate(source_lines, start=1):
-            changed_line = changed_by_line.get(index)
-            class_name = "diff-line-context"
-            mark = ""
-            if changed_line is not None:
-                class_name = "diff-line-covered" if changed_line.covered else "diff-line-missing"
-                mark = "+" if changed_line.covered else "!"
-            line_parts.append(
-                '<div class="diff-line {class_name}">'
-                '<div class="diff-line-number">{line_number}</div>'
-                '<div class="diff-marker">{mark}</div>'
-                '<code class="diff-code">{content}</code></div>'.format(
-                    class_name=class_name,
-                    line_number=index,
-                    mark=mark,
-                    content=escape(content),
+        for range_index, (start, end) in enumerate(source_ranges):
+            if range_index:
+                line_parts.append('<div class="diff-hunk">...</div>')
+            for index in range(start, end + 1):
+                content = source_lines[index - 1] if index <= len(source_lines) else ""
+                changed_line = changed_by_line.get(index)
+                class_name = "diff-line-context"
+                mark = ""
+                if changed_line is not None:
+                    class_name = (
+                        "diff-line-covered" if changed_line.covered else "diff-line-missing"
+                    )
+                    mark = "+" if changed_line.covered else "!"
+                line_parts.append(
+                    '<div class="diff-line {class_name}">'
+                    '<div class="diff-line-number">{line_number}</div>'
+                    '<div class="diff-marker">{mark}</div>'
+                    '<code class="diff-code">{content}</code></div>'.format(
+                        class_name=class_name,
+                        line_number=index,
+                        mark=mark,
+                        content=escape(content),
+                    )
                 )
-            )
     else:
         for line in line_rows:
             line_parts.append(
@@ -227,7 +275,9 @@ def file_diff_html(
         project=percent(file.patch_line_rate),
         change=status_icon(file.patch_line_rate >= target),
         hunk_label=(
-            "Complete file at head commit" if file.source_content else "Changed lines in this file"
+            "Changed lines with semantic context"
+            if source_ranges
+            else "Changed lines in this file"
         ),
         lines="".join(line_parts),
     )
