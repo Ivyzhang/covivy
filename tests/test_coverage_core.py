@@ -5,7 +5,9 @@ from app.coverage import (
     compute_patch_coverage,
     format_coverage,
     parse_cobertura,
+    parse_go_coverprofile,
     parse_lcov,
+    parse_report,
     parse_unified_diff_changed_line_contents,
     parse_unified_diff_changed_lines,
 )
@@ -58,6 +60,21 @@ end_of_record
         self.assertEqual(report.total_lines, 3)
         self.assertEqual(report.covered_lines, 2)
         self.assertAlmostEqual(report.line_rate, 2 / 3)
+
+    def test_parse_go_coverprofile_expands_block_ranges(self):
+        content = """mode: set
+github.com/acme/demo/pkg/api.go:10.2,12.4 2 1
+github.com/acme/demo/pkg/api.go:15.2,15.20 1 0
+"""
+
+        report = parse_go_coverprofile(content.encode())
+
+        self.assertEqual([file.path for file in report.files], ["github.com/acme/demo/pkg/api.go"])
+        self.assertEqual(
+            [(line.number, line.hits) for line in report.files[0].lines],
+            [(10, 1), (11, 1), (12, 1), (15, 0)],
+        )
+        self.assertEqual(parse_report("go-coverprofile", content.encode()).total_lines, 4)
 
     def test_parse_unified_diff_records_only_head_side_added_lines(self):
         patch = """@@ -20,6 +20,8 @@ def route():
@@ -192,15 +209,23 @@ end_of_record
 SF:tests/test_main.py
 DA:5,0
 end_of_record
+SF:src/widget.test.ts
+DA:9,0
+end_of_record
 """
         )
 
         result = compute_patch_coverage(
             report,
-            {"app/main.py": {10, 11}, "tests/test_main.py": {5}},
+            {
+                "app/main.py": {10, 11},
+                "tests/test_main.py": {5},
+                "src/widget.test.ts": {9},
+            },
             {
                 "app/main.py": {10: "value = 1", 11: ""},
                 "tests/test_main.py": {5: "def test_value(): pass"},
+                "src/widget.test.ts": {9: "it('works', () => {})"},
             },
         )
 
@@ -326,6 +351,390 @@ end_of_record
             [(line.number, line.covered) for line in result.files[0].lines],
             [(6, True), (10, True), (11, True), (12, True), (13, True)],
         )
+
+    def test_compute_patch_coverage_uses_typescript_semantics_and_ignores_comments(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "export function client() {",
+                "  return api.request({",
+                "    method: 'POST',",
+                "    url: '/users',",
+                "    body: { active: true },",
+                "  });",
+                "}",
+                "",
+                "// changed comment",
+            ]
+        )
+        changed_contents = {
+            3: "    method: 'POST',",
+            4: "    url: '/users',",
+            5: "    body: { active: true },",
+            8: "",
+            9: "// changed comment",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 3)
+        self.assertEqual(result.patch_total_lines, 3)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(3, True), (4, True), (5, True)],
+        )
+
+    def test_compute_patch_coverage_does_not_cover_typescript_statement_from_function_block(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+DA:3,0
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "export function f() {",
+                "  covered();",
+                "  missed();",
+                "}",
+            ]
+        )
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": {3}},
+            {"src/client.ts": {3: "  missed();"}},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 0)
+        self.assertEqual(result.patch_total_lines, 1)
+        self.assertEqual([(line.number, line.covered) for line in result.files[0].lines], [(3, False)])
+
+    def test_compute_patch_coverage_keeps_unresolved_changed_lines_in_denominator(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "export function a() {",
+                "  return api.request({",
+                "    url: '/x',",
+                "  });",
+                "}",
+                "export function b() {",
+                "  missed();",
+                "}",
+            ]
+        )
+        changed_contents = {
+            3: "    url: '/x',",
+            7: "  missed();",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 1)
+        self.assertEqual(result.patch_total_lines, 2)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(3, True), (7, False)],
+        )
+
+    def test_compute_patch_coverage_ignores_typescript_type_only_changes(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:7,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "import type { User } from './types';",
+                "",
+                "interface Options {",
+                "  enabled: boolean;",
+                "}",
+                "",
+                "export const active = true;",
+            ]
+        )
+        changed_contents = {
+            1: "import type { User } from './types';",
+            3: "interface Options {",
+            4: "  enabled: boolean;",
+            5: "}",
+            7: "export const active = true;",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 1)
+        self.assertEqual(result.patch_total_lines, 1)
+        self.assertEqual([(line.number, line.covered) for line in result.files[0].lines], [(7, True)])
+
+    def test_compute_patch_coverage_counts_runtime_typescript_imports(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:3,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                'import { makeClient } from "./client";',
+                'import type { User } from "./types";',
+                "export const active = true;",
+            ]
+        )
+        changed_contents = {
+            1: 'import { makeClient } from "./client";',
+            2: 'import type { User } from "./types";',
+            3: "export const active = true;",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 1)
+        self.assertEqual(result.patch_total_lines, 2)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(1, False), (3, True)],
+        )
+
+    def test_compute_patch_coverage_counts_side_effect_typescript_imports(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                'import "./polyfill";',
+                "export const active = true;",
+            ]
+        )
+        changed_contents = {
+            1: 'import "./polyfill";',
+            2: "export const active = true;",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 1)
+        self.assertEqual(result.patch_total_lines, 2)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(1, False), (2, True)],
+        )
+
+    def test_compute_patch_coverage_counts_runtime_typescript_namespace_and_enum_members(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+DA:6,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "namespace RuntimeConfig {",
+                "  export const enabled = true;",
+                "}",
+                "",
+                "enum Mode {",
+                "  Active = 1,",
+                "}",
+                "",
+                "declare namespace AmbientConfig {",
+                "  const enabled: boolean;",
+                "}",
+            ]
+        )
+        changed_contents = {
+            2: "  export const enabled = true;",
+            6: "  Active = 1,",
+            10: "  const enabled: boolean;",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 2)
+        self.assertEqual(result.patch_total_lines, 2)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(2, True), (6, True)],
+        )
+
+    def test_compute_patch_coverage_does_not_cover_missed_typescript_variable_declarator(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:1,1
+DA:2,0
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "const a = covered(),",
+                "  b = missed();",
+            ]
+        )
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": {2}},
+            {"src/client.ts": {2: "  b = missed();"}},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 0)
+        self.assertEqual(result.patch_total_lines, 1)
+        self.assertEqual([(line.number, line.covered) for line in result.files[0].lines], [(2, False)])
+
+    def test_compute_patch_coverage_trusts_empty_typescript_compiler_decisions(self):
+        report = parse_lcov(
+            b"""SF:src/client.ts
+DA:2,1
+end_of_record
+"""
+        )
+        source = "\n".join(
+            [
+                "class Client {",
+                "  config = {",
+                "    missed: true,",
+                "  };",
+                "}",
+            ]
+        )
+        changed_contents = {
+            3: "    missed: true,",
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"src/client.ts": set(changed_contents)},
+            {"src/client.ts": changed_contents},
+            {"src/client.ts": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 0)
+        self.assertEqual(result.patch_total_lines, 1)
+        self.assertEqual([(line.number, line.covered) for line in result.files[0].lines], [(3, False)])
+
+    def test_compute_patch_coverage_supports_go_coverprofile_and_ignores_comments(self):
+        report = parse_go_coverprofile(
+            b"""mode: count
+github.com/acme/demo/pkg/api.go:4.2,8.3 3 1
+github.com/acme/demo/pkg/api.go:11.2,11.18 1 0
+"""
+        )
+        source = "\n".join(
+            [
+                "package api",
+                "",
+                "func Build() string {",
+                "    return strings.Join([]string{",
+                '        "a",',
+                '        "b",',
+                "    }, \",\")",
+                "}",
+                "",
+                "// changed comment",
+                "func Missed() string { return \"x\" }",
+            ]
+        )
+        changed_contents = {
+            5: '        "a",',
+            6: '        "b",',
+            10: "// changed comment",
+            11: 'func Missed() string { return "x" }',
+        }
+
+        result = compute_patch_coverage(
+            report,
+            {"github.com/acme/demo/pkg/api.go": set(changed_contents)},
+            {"github.com/acme/demo/pkg/api.go": changed_contents},
+            {"github.com/acme/demo/pkg/api.go": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 2)
+        self.assertEqual(result.patch_total_lines, 3)
+        self.assertEqual(
+            [(line.number, line.covered) for line in result.files[0].lines],
+            [(5, True), (6, True), (11, False)],
+        )
+
+    def test_compute_patch_coverage_ignores_go_structural_brace_lines(self):
+        report = parse_go_coverprofile(
+            b"""mode: set
+github.com/acme/demo/pkg/api.go:4.2,8.3 3 1
+"""
+        )
+        source = "\n".join(
+            [
+                "package api",
+                "",
+                "func Build() string {",
+                "    return strings.Join([]string{",
+                '        "a",',
+                '        "b",',
+                "    }, \",\")",
+                "}",
+            ]
+        )
+
+        result = compute_patch_coverage(
+            report,
+            {"github.com/acme/demo/pkg/api.go": {8}},
+            {"github.com/acme/demo/pkg/api.go": {8: "}"}},
+            {"github.com/acme/demo/pkg/api.go": source},
+        )
+
+        self.assertEqual(result.patch_covered_lines, 0)
+        self.assertEqual(result.patch_total_lines, 0)
+        self.assertEqual(result.files[0].lines, [])
 
     def test_security_helpers_hash_tokens_and_verify_github_signature(self):
         token_hash = hash_upload_token("cov_secret", "pepper")

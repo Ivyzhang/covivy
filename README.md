@@ -139,6 +139,30 @@ You can also use the bundled composite action from another repository:
     format: cobertura
 ```
 
+For TypeScript or JavaScript projects, generate LCOV and upload it directly:
+
+```yaml
+- run: npm test -- --coverage
+- uses: Ivyzhang/covivy/upload-action@main
+  with:
+    token: ${{ secrets.COVIVY_UPLOAD_TOKEN }}
+    base-url: ${{ vars.COVIVY_BASE_URL }}
+    coverage-file: coverage/lcov.info
+    format: lcov
+```
+
+For Go projects, upload the native coverprofile:
+
+```yaml
+- run: go test ./... -coverprofile=coverage.out
+- uses: Ivyzhang/covivy/upload-action@main
+  with:
+    token: ${{ secrets.COVIVY_UPLOAD_TOKEN }}
+    base-url: ${{ vars.COVIVY_BASE_URL }}
+    coverage-file: coverage.out
+    format: go-coverprofile
+```
+
 ## Upload contract
 
 ```bash
