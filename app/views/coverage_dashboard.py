@@ -63,15 +63,16 @@ def app_page_html(title: str, body: str) -> str:
         ".metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0}.summary-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;box-shadow:0 2px 10px rgba(20,20,50,.05)}"
         ".summary-card .label{color:var(--muted);font-size:10px;text-transform:uppercase;font-weight:850}.summary-card .value{font-size:20px;font-weight:850;margin-top:6px}.summary-card .sub{margin-top:3px;color:var(--muted);font-size:12px}"
         ".status-pass,.trend-up,.positive{color:#1a7f37;font-weight:850}.status-fail,.trend-down,.negative{color:#cf222e;font-weight:850}"
-        ".tabs{display:flex;gap:16px;border-bottom:1px solid var(--line);margin:12px 0}.tab{padding:8px 0;font-weight:850;color:var(--ink)}.tab.active{border-bottom:3px solid var(--pink)}"
+        ".tabs{display:flex;gap:16px;border-bottom:1px solid var(--line);margin:12px 0}.tab{padding:8px 0;font-weight:850;color:var(--ink)}.tab.active{border-bottom:3px solid var(--ink)}"
+        ".coverage-subtabs{display:flex;gap:18px;border-bottom:1px solid var(--line);margin:0 -14px 10px;padding:0 14px}.coverage-subtabs span{padding:8px 0;color:var(--muted);font-weight:700}.coverage-subtabs .active{color:var(--ink);border-bottom:3px solid var(--ink)}.coverage-legend{display:flex;gap:8px;margin:0 -14px 10px;padding:0 14px 8px;border-bottom:1px solid var(--line);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}.legend-missing,.legend-partial,.legend-covered{padding:2px 10px}.legend-missing{background:#ffebe9}.legend-partial{background:#fff8c5}.legend-covered{background:#dafbe1}"
         ".coverage-actions{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.coverage-button{border-radius:10px;background:var(--green);color:var(--ink);padding:9px 13px;display:inline-block}"
         ".coverage-split{display:grid;grid-template-columns:minmax(360px,.82fr) minmax(0,1.18fr);gap:14px;align-items:start}.coverage-split>.dashboard-card{min-width:0;margin-bottom:0}.coverage-details{max-height:calc(100vh - 160px);overflow:auto;position:sticky;top:14px}"
         ".back-to-top{position:fixed;right:22px;bottom:22px;z-index:20;border-radius:999px;background:var(--green);color:var(--ink);padding:10px 14px;box-shadow:0 6px 18px rgba(20,20,50,.16)}"
-        ".files-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px}.changed-files-table{table-layout:fixed}.changed-files-table th:first-child{width:48%}.changed-files-table th:nth-child(2){width:16%}.changed-files-table th:nth-child(3){width:16%}.changed-files-table th:nth-child(4){width:10%}.changed-files-table th:nth-child(5){width:10%}.changed-files-table td:first-child{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.changed-files-table td{overflow-wrap:anywhere}"
+        ".files-summary{display:none}.changed-files-table{table-layout:fixed}.changed-files-table th:first-child{width:52%}.changed-files-table th:nth-child(2){width:13%}.changed-files-table th:nth-child(3){width:15%}.changed-files-table th:nth-child(4){width:13%}.changed-files-table th:nth-child(5){width:7%}.changed-files-table td:first-child{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.changed-files-table td{overflow-wrap:anywhere}.changed-files-table tr.selected-file td{background:#f6f8fa;font-weight:850}"
         ".file-diff-report{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:12px 0;background:var(--card)}.file-diff-report h3{padding:10px 12px;margin:0;font-size:14px}"
         ".file-diff-header{display:grid;grid-template-columns:minmax(0,1fr) 52px 76px 76px 44px;gap:8px;align-items:center;padding:9px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff;font-weight:850}"
         ".file-diff-header .file-name{min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}.file-diff-header .num{text-align:right}.diff-hunk{background:#f6f8fa;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:5px 10px;border-bottom:1px solid var(--line)}"
-        ".diff-line{display:grid;grid-template-columns:56px 24px minmax(0,1fr);align-items:start;min-height:24px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border-bottom:1px solid #eef1f4}.diff-line-number{color:#57606a;text-align:right;padding:4px 8px;border-right:1px solid var(--line);background:#f6f8fa}.diff-marker{text-align:center;padding:4px 0;color:#57606a}.diff-code{display:block;min-width:0;white-space:pre-wrap;padding:4px 8px;overflow-wrap:anywhere;word-break:break-word}.diff-line-covered{background:#dafbe1}.diff-line-missing{background:#ffebe9}.diff-line-covered .diff-marker{color:#1a7f37;font-weight:850}.diff-line-missing .diff-marker{color:#cf222e;font-weight:850}"
+        ".diff-line{display:grid;grid-template-columns:56px 24px minmax(0,1fr);align-items:start;min-height:24px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border-bottom:1px solid #eef1f4}.diff-line-number{color:#57606a;text-align:right;padding:4px 8px;border-right:1px solid var(--line);background:#f6f8fa}.diff-marker{text-align:center;padding:4px 0;color:#57606a}.diff-code{display:block;min-width:0;white-space:pre-wrap;padding:4px 8px;overflow-wrap:anywhere;word-break:break-word}.diff-line-covered{background:#dafbe1}.diff-line-missing{background:#ffebe9}.diff-line-context{background:#fff}.diff-line-covered .diff-marker{color:#1a7f37;font-weight:850}.diff-line-missing .diff-marker{color:#cf222e;font-weight:850}"
         "button,.configure-link{border:0;border-radius:10px;background:var(--green);color:var(--ink);font-weight:850;padding:9px 13px;cursor:pointer;display:inline-block}"
         ".chip.disabled{opacity:.65;background:var(--soft);cursor:not-allowed;border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted)}"
         "input,textarea{border:1px solid #cfd6e6;border-radius:8px;padding:10px 12px;font:inherit}label{display:grid;gap:8px;margin-bottom:14px}"
@@ -164,22 +165,44 @@ def file_diff_html(
 ) -> str:
     missing = file.patch_total_lines - file.patch_covered_lines
     line_parts = []
-    for line in line_rows:
-        line_parts.append(
-            '<div class="diff-line {class_name}">'
-            '<div class="diff-line-number">{line_number}</div>'
-            '<div class="diff-marker">{mark}</div>'
-            '<code class="diff-code">{content}</code></div>'.format(
-                class_name="diff-line-covered" if line.covered else "diff-line-missing",
-                line_number=line.line_number,
-                mark="+" if line.covered else "!",
-                content=escape(
-                    line.line_content
-                    if line.line_content is not None
-                    else "Line %s" % line.line_number
-                ),
+    changed_by_line = {line.line_number: line for line in line_rows}
+    if file.source_content:
+        source_lines = file.source_content.splitlines()
+        for index, content in enumerate(source_lines, start=1):
+            changed_line = changed_by_line.get(index)
+            class_name = "diff-line-context"
+            mark = ""
+            if changed_line is not None:
+                class_name = "diff-line-covered" if changed_line.covered else "diff-line-missing"
+                mark = "+" if changed_line.covered else "!"
+            line_parts.append(
+                '<div class="diff-line {class_name}">'
+                '<div class="diff-line-number">{line_number}</div>'
+                '<div class="diff-marker">{mark}</div>'
+                '<code class="diff-code">{content}</code></div>'.format(
+                    class_name=class_name,
+                    line_number=index,
+                    mark=mark,
+                    content=escape(content),
+                )
             )
-        )
+    else:
+        for line in line_rows:
+            line_parts.append(
+                '<div class="diff-line {class_name}">'
+                '<div class="diff-line-number">{line_number}</div>'
+                '<div class="diff-marker">{mark}</div>'
+                '<code class="diff-code">{content}</code></div>'.format(
+                    class_name="diff-line-covered" if line.covered else "diff-line-missing",
+                    line_number=line.line_number,
+                    mark="+" if line.covered else "!",
+                    content=escape(
+                        line.line_content
+                        if line.line_content is not None
+                        else "Line %s" % line.line_number
+                    ),
+                )
+            )
     if not line_parts:
         line_parts.append(
             '<div class="diff-line"><div></div><div></div><code class="diff-code">No changed line coverage available.</code></div>'
@@ -194,7 +217,7 @@ def file_diff_html(
         '<div class="num">{project}</div>'
         '<div class="num">{change}</div>'
         "</div>"
-        '<div class="diff-hunk">Changed lines in this file</div>'
+        '<div class="diff-hunk">{hunk_label}</div>'
         "{lines}</section>"
     ).format(
         anchor=file_diff_anchor(file),
@@ -203,6 +226,9 @@ def file_diff_html(
         patch=percent(file.patch_line_rate),
         project=percent(file.patch_line_rate),
         change=status_icon(file.patch_line_rate >= target),
+        hunk_label=(
+            "Complete file at head commit" if file.source_content else "Changed lines in this file"
+        ),
         lines="".join(line_parts),
     )
 
@@ -270,9 +296,13 @@ def render_pull_files_page(
         missing_count += missing_for_file
         if file.patch_line_rate < target:
             failing_count += 1
+        row_class = "selected-file" if file.path == selected_path else ""
+        if selected_path is None and selected is not None and selected[0].path == file.path:
+            row_class = "selected-file"
         row_parts.append(
-            '<tr><td><a href="/repos/{owner}/{repo}/pulls/{number}/files/{path_href}">{path}</a></td><td>{lines}</td><td>{coverage} {icon}</td>'
+            '<tr class="{row_class}"><td><a href="/repos/{owner}/{repo}/pulls/{number}/files/{path_href}">› {path}</a></td><td>{lines}</td><td>{coverage} {icon}</td>'
             "<td>{missing}</td><td>{status}</td></tr>".format(
+                row_class=row_class,
                 owner=escape(repository.owner),
                 repo=escape(repository.name),
                 number=pull.github_pr_number,
@@ -306,9 +336,14 @@ def render_pull_files_page(
         '<section class="dashboard-hero">{header}</section>'
         '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
         '<span class="tab active">Changed files</span></nav>'
-        '{summary}<div class="coverage-split"><section class="dashboard-card"><h2>Changed file coverage</h2>{files_summary}'
-        '<table class="changed-files-table"><tr><th>File</th><th>Changed lines</th>'
-        "<th>Patch coverage</th><th>Missing</th><th>Status</th></tr>{rows}</table></section>"
+        '{summary}<div class="coverage-split"><section class="dashboard-card"><h2>Changed file coverage</h2>'
+        '<nav class="coverage-subtabs"><span class="active">Files changed<sup>{file_count}</sup></span>'
+        "<span>Indirect changes<sup>0</sup></span><span>Commits<sup>1</sup></span>"
+        "<span>Flags<sup>0</sup></span><span>Components<sup>0</sup></span></nav>"
+        '<div class="coverage-legend"><span class="legend-missing">Uncovered !</span>'
+        '<span class="legend-partial">Partial !</span><span class="legend-covered">Covered</span></div>{files_summary}'
+        '<table class="changed-files-table"><tr><th>Name</th><th>Changed lines</th>'
+        "<th>Patch %</th><th>Missed lines</th><th></th></tr>{rows}</table></section>"
         '<section class="dashboard-card coverage-details"><h2>File coverage details</h2>{diff_sections}</section></div>'
         '<a class="back-to-top" href="#top">Back to top</a>'
         "</main>"
@@ -318,6 +353,7 @@ def render_pull_files_page(
         owner=escape(repository.owner),
         repo=escape(repository.name),
         number=pull.github_pr_number,
+        file_count=file_count,
         summary=summary_html,
         files_summary=files_summary,
         rows=rows,

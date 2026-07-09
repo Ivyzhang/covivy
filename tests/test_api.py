@@ -404,12 +404,14 @@ class ApiTests(unittest.TestCase):
                 path="src/api.py",
                 patch_covered_lines=1,
                 patch_total_lines=2,
+                source_content="def api():\n    return ok\n    return missing\n",
             )
             second_file_annotation = PrFileAnnotation(
                 annotation_id=annotation.id,
                 path="src/worker.py",
                 patch_covered_lines=1,
                 patch_total_lines=1,
+                source_content="def worker():\n    worker covered\n",
             )
             session.add_all([file_annotation, second_file_annotation])
             session.flush()
@@ -488,8 +490,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn("diff-line-missing", files_response.text)
         self.assertIn("Files failing target", files_response.text)
         self.assertIn("Missing changed lines", files_response.text)
-        self.assertIn('/repos/octo/demo/pulls/7/files/src/api.py', files_response.text)
-        self.assertIn(">src/api.py</a>", files_response.text)
+        self.assertIn("/repos/octo/demo/pulls/7/files/src/api.py", files_response.text)
+        self.assertIn(">› src/api.py</a>", files_response.text)
         self.assertIn("<td>1 / 2</td>", files_response.text)
         self.assertIn("<td>50.00%", files_response.text)
         self.assertIn("<td>1</td>", files_response.text)
@@ -498,15 +500,15 @@ class ApiTests(unittest.TestCase):
         self.assertIn("src/api.py line coverage", files_response.text)
         self.assertIn("return ok", files_response.text)
         self.assertIn("return missing", files_response.text)
-        self.assertIn(">src/worker.py</a>", files_response.text)
+        self.assertIn(">› src/worker.py</a>", files_response.text)
         self.assertNotIn("src/worker.py line coverage", files_response.text)
         self.assertNotIn("worker covered", files_response.text)
 
         selected_file_response = self.client.get("/repos/octo/demo/pulls/7/files/src/worker.py")
         self.assertEqual(selected_file_response.status_code, 200)
         self.assertIn("Changed file coverage", selected_file_response.text)
-        self.assertIn(">src/api.py</a>", selected_file_response.text)
-        self.assertIn(">src/worker.py</a>", selected_file_response.text)
+        self.assertIn(">› src/api.py</a>", selected_file_response.text)
+        self.assertIn(">› src/worker.py</a>", selected_file_response.text)
         self.assertIn("src/worker.py line coverage", selected_file_response.text)
         self.assertIn("worker covered", selected_file_response.text)
         self.assertNotIn("src/api.py line coverage", selected_file_response.text)

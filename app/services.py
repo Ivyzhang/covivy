@@ -647,6 +647,7 @@ async def update_github_pr(
             path=file_result.path,
             patch_covered_lines=file_result.patch_covered_lines,
             patch_total_lines=file_result.patch_total_lines,
+            source_content=source_by_file.get(file_result.path),
         )
         session.add(file_annotation)
         session.flush()

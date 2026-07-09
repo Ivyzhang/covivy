@@ -248,6 +248,7 @@ class PrFileAnnotation(Base):
     path: Mapped[str] = mapped_column(Text, nullable=False)
     patch_covered_lines: Mapped[int] = mapped_column(Integer, nullable=False)
     patch_total_lines: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
 
     @property
