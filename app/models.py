@@ -34,6 +34,58 @@ class Account(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
 
 
+class ExternalIdentity(Base):
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_id", name="uq_external_identities_provider_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    login: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class OAuthToken(Base):
+    __tablename__ = "oauth_tokens"
+    __table_args__ = (UniqueConstraint("identity_id", name="uq_oauth_tokens_identity"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identity_id: Mapped[int] = mapped_column(ForeignKey("external_identities.id"), nullable=False)
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token: Mapped[str] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    scope: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class DashboardUser(Base):
+    __tablename__ = "dashboard_users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+    __table_args__ = (UniqueConstraint("session_token_hash", name="uq_user_sessions_token_hash"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identity_id: Mapped[int] = mapped_column(ForeignKey("external_identities.id"), nullable=True)
+    dashboard_user_id: Mapped[int] = mapped_column(ForeignKey("dashboard_users.id"), nullable=True)
+    session_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+
 class Installation(Base):
     __tablename__ = "installations"
 
@@ -45,11 +97,16 @@ class Installation(Base):
 
 class Repository(Base):
     __tablename__ = "repositories"
-    __table_args__ = (UniqueConstraint("owner", "name", name="uq_repositories_owner_name"),)
+    __table_args__ = (
+        UniqueConstraint("owner", "name", name="uq_repositories_owner_name"),
+        UniqueConstraint("provider", "provider_repo_id", name="uq_repositories_provider_repo_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     installation_id: Mapped[int] = mapped_column(ForeignKey("installations.id"), nullable=True)
     github_repo_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), default="github", nullable=False)
+    provider_repo_id: Mapped[str] = mapped_column(String(255), nullable=True)
     owner: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(511), nullable=False)
@@ -58,6 +115,23 @@ class Repository(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     upload_token_hash: Mapped[str] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+
+
+class RepositorySettings(Base):
+    __tablename__ = "repository_settings"
+    __table_args__ = (UniqueConstraint("repository_id", name="uq_repository_settings_repo"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repository_id: Mapped[int] = mapped_column(ForeignKey("repositories.id"), nullable=False)
+    patch_coverage_target: Mapped[float] = mapped_column(Float, default=0.8, nullable=False)
+    project_coverage_target: Mapped[float] = mapped_column(Float, default=0.8, nullable=False)
+    ignore_paths: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), default=list, nullable=False
+    )
+    status_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    comment_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now, nullable=False)
 
 
 class Commit(Base):

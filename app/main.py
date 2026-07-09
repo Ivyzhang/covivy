@@ -1,24 +1,44 @@
 from __future__ import annotations
 
+import secrets
 from html import escape
 from typing import Optional
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
+from app.dashboard import (
+    SESSION_COOKIE,
+    authenticate_dashboard_user,
+    create_dashboard_session,
+    create_dashboard_user,
+    create_dashboard_user_session,
+    current_actor_label,
+    ensure_repository_settings,
+    onboard_repository,
+    parse_ignore_paths,
+    require_dashboard_session,
+    require_identity,
+    token_for_identity,
+    upsert_identity_and_token,
+)
 from app.db import get_session
 from app.models import (
     Commit,
     CoverageReportRow,
+    ExternalIdentity,
     PrAnnotation,
     PrFileAnnotation,
     PrFileLineAnnotation,
     PullRequest,
     Repository,
 )
+from app.providers.base import ProviderRepository
+from app.providers.registry import get_provider, provider_keys
 from app.security import verify_github_signature
 from app.services import (
     create_upload,
@@ -31,6 +51,7 @@ from app.services import (
 )
 
 app = FastAPI(title="Coverage Service")
+OAUTH_STATE_COOKIE = "covivy_oauth_state"
 
 
 def percent(value: float) -> str:
@@ -74,6 +95,8 @@ def page_html(title: str, body: str) -> str:
         ".title-block h1{font-size:24px;line-height:1.25;margin:0 0 8px}.muted{color:var(--muted)}"
         ".chips{display:flex;flex-wrap:wrap;gap:8px}.chip{border:1px solid var(--border);"
         "background:var(--panel);border-radius:999px;padding:5px 9px;color:var(--muted)}"
+        ".chip.disabled{opacity:.65;background:var(--soft);cursor:not-allowed}"
+        ".chip-form{margin:0}.logout-chip{font:inherit;cursor:pointer}"
         ".metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:18px 0}"
         ".summary-card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px}"
         ".summary-card .label{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:700}"
@@ -107,6 +130,250 @@ def metric_card(label: str, value: str, sub: str = "", class_name: str = "") -> 
         '<section class="summary-card {class_name}"><div class="label">{label}</div>'
         '<div class="value">{value}</div><div class="sub">{sub}</div></section>'
     ).format(class_name=class_name, label=escape(label), value=value, sub=sub)
+
+
+def bool_from_form(value: Optional[str]) -> bool:
+    return value in {"1", "true", "yes", "on"}
+
+
+def dashboard_layout(
+    title: str,
+    body: str,
+    settings: Optional[Settings] = None,
+    show_logout: bool = False,
+) -> HTMLResponse:
+    settings = settings or get_settings()
+    provider_chips = ['<a class="nav-chip" href="/dashboard">Repositories</a>']
+    if not show_logout:
+        if settings.github_oauth_client_id and settings.github_oauth_client_secret:
+            provider_chips.append('<a class="nav-chip" href="/auth/github">GitHub login</a>')
+        else:
+            provider_chips.append('<span class="nav-chip disabled">GitHub login unavailable</span>')
+        if settings.gitlab_oauth_client_id and settings.gitlab_oauth_client_secret:
+            provider_chips.append('<a class="nav-chip" href="/auth/gitlab">GitLab login</a>')
+        else:
+            provider_chips.append('<span class="nav-chip disabled">GitLab login unavailable</span>')
+    if show_logout:
+        provider_chips.append(
+            '<form method="post" action="/logout" class="chip-form">'
+            '<button class="nav-chip logout-chip" type="submit">Logout</button></form>'
+        )
+    shell = (
+        '<main class="app-shell"><header class="app-header">'
+        '<a class="app-brand" href="/dashboard"><span class="app-brand-mark">C</span><span>Covivy</span></a>'
+        '<nav class="app-nav">{chips}</nav></header>'
+        '<section class="dashboard-hero"><div><p class="eyebrow">Workspace</p>'
+        '<h1>{title}</h1><p>Configure repositories, install the GitHub App, and manage coverage gates.</p></div></section>'
+        "{body}</main>"
+    ).format(title=escape(title), chips="".join(provider_chips), body=body)
+    return HTMLResponse(app_page_html(title, shell))
+
+
+def app_page_html(title: str, body: str) -> str:
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>" + escape(title) + "</title>"
+        "<style>"
+        ":root{--bg:#f4f6fb;--card:#fff;--ink:#16143d;--muted:#5e6175;--line:#d8deea;"
+        "--green:#2edca8;--pink:#ee2b6c;--soft:#eef1f7}"
+        "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px}"
+        "a{color:var(--pink);font-weight:700;text-decoration:none}.app-shell{max-width:1180px;margin:0 auto;padding:28px}"
+        ".app-header{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:34px}"
+        ".app-brand{display:flex;align-items:center;gap:14px;color:var(--ink);font-size:32px;font-weight:850}"
+        ".app-brand-mark{width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,#20dfa2,#8cead5);"
+        "display:grid;place-items:center;color:#fff}.app-nav{display:flex;flex-wrap:wrap;gap:10px;align-items:center}"
+        ".nav-chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:8px 12px;color:var(--ink);font-weight:700}"
+        ".nav-chip.disabled{opacity:.6;background:var(--soft);cursor:not-allowed}.chip-form{margin:0}.logout-chip{font:inherit;cursor:pointer}"
+        ".dashboard-hero{background:var(--card);border-radius:14px;box-shadow:0 2px 10px rgba(20,20,50,.08);padding:34px 38px;margin-bottom:22px}"
+        ".dashboard-hero h1{font-size:34px;line-height:1.1;margin:0 0 10px}.dashboard-hero p{margin:0;color:var(--muted);font-size:17px;line-height:1.5}"
+        ".eyebrow{color:var(--pink)!important;text-transform:uppercase;font-weight:850;font-size:12px!important;letter-spacing:.08em;margin-bottom:10px!important}"
+        ".dashboard-card,.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px;box-shadow:0 2px 10px rgba(20,20,50,.06);margin-bottom:18px}"
+        ".dashboard-card h2,.panel h2{margin:0 0 18px;font-size:22px}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card)}"
+        "th,td{padding:14px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:12px;color:var(--muted);text-transform:uppercase}"
+        ".metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:18px 0}.summary-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:0 2px 10px rgba(20,20,50,.05)}"
+        ".summary-card .label{color:var(--muted);font-size:12px;text-transform:uppercase;font-weight:850}.summary-card .value{font-size:26px;font-weight:850;margin-top:8px}.summary-card .sub{margin-top:4px;color:var(--muted)}"
+        ".status-pass,.trend-up,.positive{color:#1a7f37;font-weight:850}.status-fail,.trend-down,.negative{color:#cf222e;font-weight:850}"
+        ".tabs{display:flex;gap:18px;border-bottom:1px solid var(--line);margin:18px 0}.tab{padding:10px 0;font-weight:850;color:var(--ink)}.tab.active{border-bottom:3px solid var(--pink)}"
+        ".files-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.changed-files-table td:first-child{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}"
+        ".file-diff-report{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin:16px 0;background:var(--card)}.file-diff-report h3{padding:14px 16px;margin:0}"
+        ".file-diff-header{display:grid;grid-template-columns:1fr 90px 110px 110px 90px;gap:12px;align-items:center;padding:12px 14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff;font-weight:850}"
+        ".file-diff-header .file-name{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.file-diff-header .num{text-align:right}.diff-hunk{background:#f6f8fa;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;padding:5px 10px;border-bottom:1px solid var(--line)}"
+        ".diff-line{display:grid;grid-template-columns:72px 28px 1fr;align-items:start;min-height:28px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;border-bottom:1px solid #eef1f4}.diff-line-number{color:#57606a;text-align:right;padding:5px 10px;border-right:1px solid var(--line);background:#f6f8fa}.diff-marker{text-align:center;padding:5px 0;color:#57606a}.diff-code{white-space:pre-wrap;padding:5px 10px;overflow-wrap:anywhere}.diff-line-covered{background:#dafbe1}.diff-line-missing{background:#ffebe9}.diff-line-covered .diff-marker{color:#1a7f37;font-weight:850}.diff-line-missing .diff-marker{color:#cf222e;font-weight:850}"
+        "button,.configure-link{border:0;border-radius:10px;background:var(--green);color:var(--ink);font-weight:850;padding:11px 16px;cursor:pointer;display:inline-block}"
+        ".chip.disabled{opacity:.65;background:var(--soft);cursor:not-allowed;border:1px solid var(--line);border-radius:999px;padding:6px 10px;color:var(--muted)}"
+        "input,textarea{border:1px solid #cfd6e6;border-radius:8px;padding:10px 12px;font:inherit}label{display:grid;gap:8px;margin-bottom:14px}"
+        "@media(max-width:760px){.app-shell{padding:18px}.app-header{display:block}.app-nav{margin-top:16px}.dashboard-hero{padding:24px}.metric-grid,.files-summary{grid-template-columns:1fr}table{font-size:13px}}"
+        "</style></head><body>" + body + "</body></html>"
+    )
+
+
+def auth_page(settings: Settings, mode: str = "login", message: str = "") -> HTMLResponse:
+    github = (
+        '<a class="sso-button" href="/auth/github"><span class="sso-mark">GH</span>'
+        "<span>Sign in with GitHub</span></a>"
+        if provider_configured("github", settings)
+        else '<button class="sso-button" disabled><span class="sso-mark">GH</span><span>GitHub unavailable</span></button>'
+    )
+    gitlab = (
+        '<a class="sso-button" href="/auth/gitlab"><span class="sso-mark">GL</span>'
+        "<span>Sign in with GitLab</span></a>"
+        if provider_configured("gitlab", settings)
+        else '<button class="sso-button" disabled><span class="sso-mark">GL</span><span>GitLab unavailable</span></button>'
+    )
+    is_register = mode == "register"
+    action = "/register" if is_register else "/login"
+    title = "Create your account" if is_register else "Log in to your account"
+    submit = "Register" if is_register else "Log In"
+    switch = (
+        'Already have an account? <a href="/">Log in instead</a>'
+        if is_register
+        else 'Don\'t have an account yet? <a href="/register">Register instead</a>'
+    )
+    name_field = (
+        '<label>Display name<input name="display_name" autocomplete="name"></label>' if is_register else ""
+    )
+    error = '<div class="auth-error">%s</div>' % escape(message) if message else ""
+    body = (
+        '<main class="auth-page">'
+        '<a class="brand" href="/"><span class="brand-mark">C</span><span>Covivy</span></a>'
+        '<section class="trust-panel">'
+        '<div class="trust-block"><h2>Coverage intelligence for modern PR workflows</h2>'
+        '<p>Diff coverage, project trends, and repository gates for teams shipping through pull requests.</p></div>'
+        '<div class="trust-row"><strong>GitHub App integration</strong><span>PR comments, commit status checks, repository onboarding</span></div>'
+        '<div class="trust-grid"><div>Python</div><div>TypeScript</div><div>Go</div><div>LCOV</div><div>Coverprofile</div><div>Cobertura</div></div>'
+        '<div class="cert-pill"><strong>Semantic diff coverage</strong><span>Ignores blanks, comments, tests, and non-runtime code.</span></div>'
+        "</section>"
+        '<section class="auth-card"><h1>{title}</h1>{github}{gitlab}'
+        '<div class="or"><span></span><strong>OR</strong><span></span></div>{error}'
+        '<form method="post" action="{action}" class="auth-form">{name_field}'
+        '<label>Username or email address<input name="email" type="email" autocomplete="email" required></label>'
+        '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>'
+        '<div class="auth-actions"><p>{switch}</p><button type="submit">{submit}</button></div>'
+        "</form></section></main>"
+    ).format(
+        title=escape(title),
+        github=github,
+        gitlab=gitlab,
+        error=error,
+        action=action,
+        name_field=name_field,
+        switch=switch,
+        submit=escape(submit),
+    )
+    return HTMLResponse(auth_page_html(title, body))
+
+
+def auth_page_html(title: str, body: str) -> str:
+    return (
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>" + escape(title) + "</title>"
+        "<style>"
+        ":root{--bg:#f4f6fb;--card:#fff;--ink:#16143d;--muted:#5e6175;--line:#d8deea;"
+        "--green:#2edca8;--pink:#ee2b6c;--soft:#eef1f7}"
+        "*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}"
+        "a{color:var(--pink);font-weight:700;text-decoration:none}.auth-page{min-height:100vh;"
+        "display:grid;grid-template-columns:minmax(360px,1fr) minmax(420px,760px);gap:64px;"
+        "align-items:center;padding:40px 56px;position:relative}.brand{position:absolute;top:28px;left:36px;"
+        "display:flex;align-items:center;gap:16px;color:var(--ink);font-size:40px;font-weight:800}"
+        ".brand-mark{width:54px;height:54px;border-radius:14px;background:linear-gradient(135deg,#20dfa2,#8cead5);"
+        "display:grid;place-items:center;color:#fff}.trust-panel{max-width:640px;justify-self:end}.trust-block h2{font-size:34px;line-height:1.1;margin:0 0 12px}"
+        ".trust-block p{font-size:18px;color:var(--muted);line-height:1.6;margin:0 0 36px}.trust-row{border-top:1px solid var(--line);"
+        "border-bottom:1px solid var(--line);padding:24px 0;display:grid;gap:8px;font-size:18px}.trust-row span{color:var(--muted)}"
+        ".trust-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;border-bottom:1px solid var(--line);padding:32px 0}"
+        ".trust-grid div{font-weight:800;font-size:18px}.cert-pill{margin-top:34px;background:#e7eaf3;border-radius:999px;padding:20px 28px;"
+        "display:grid;gap:4px}.cert-pill span{color:var(--muted)}.auth-card{background:var(--card);border-radius:14px;box-shadow:0 2px 10px rgba(20,20,50,.08);"
+        "padding:48px 58px;max-width:760px;width:100%}.auth-card h1{text-align:center;font-size:32px;margin:0 0 30px}.sso-button{width:100%;height:58px;border:1px solid var(--line);"
+        "border-radius:6px;background:#fff;margin:0 0 18px;display:flex;align-items:center;justify-content:center;gap:18px;color:var(--ink);font-size:19px;font-weight:500}"
+        ".sso-button:disabled{opacity:.55;background:var(--soft);cursor:not-allowed}.sso-mark{position:absolute;left:36px;font-weight:800;color:var(--green)}"
+        ".sso-button{position:relative}.or{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:14px;margin:34px 0;color:var(--ink)}"
+        ".or span{height:1px;background:var(--line)}.auth-form{display:grid;gap:22px}.auth-form label{display:grid;gap:10px;font-size:18px}"
+        ".auth-form input{height:58px;border:1px solid #cfd6e6;border-radius:6px;font-size:18px;padding:0 14px;background:#fff}"
+        ".auth-actions{border-top:1px solid var(--line);padding-top:28px;display:grid;grid-template-columns:1fr 220px;gap:24px;align-items:center}"
+        ".auth-actions p{margin:0;text-align:center;color:#20203f}.auth-actions button{height:64px;border:0;border-radius:10px;background:var(--green);"
+        "font-size:20px;font-weight:800;color:var(--ink);cursor:pointer}.auth-error{background:#fff0f4;color:var(--pink);border:1px solid #ffc2d4;"
+        "padding:12px;border-radius:6px;margin-bottom:16px}@media(max-width:980px){.auth-page{grid-template-columns:1fr;padding:110px 20px 24px}.trust-panel{justify-self:stretch}.auth-card{padding:32px 24px}.auth-actions{grid-template-columns:1fr}.brand{font-size:32px}}"
+        "</style></head><body>" + body + "</body></html>"
+    )
+
+
+def provider_configured(provider_key: str, settings: Settings) -> bool:
+    if provider_key == "github":
+        return bool(settings.github_oauth_client_id and settings.github_oauth_client_secret)
+    if provider_key == "gitlab":
+        return bool(settings.gitlab_oauth_client_id and settings.gitlab_oauth_client_secret)
+    return False
+
+
+def provider_label(provider_key: str) -> str:
+    return {"github": "GitHub", "gitlab": "GitLab"}.get(provider_key, provider_key)
+
+
+def login_options_html(settings: Settings) -> str:
+    links = []
+    messages = []
+    if provider_configured("github", settings):
+        links.append('<a href="/auth/github">GitHub</a>')
+    else:
+        messages.append("GitHub OAuth not configured")
+    if provider_configured("gitlab", settings):
+        links.append('<a href="/auth/gitlab">GitLab</a>')
+    else:
+        messages.append("GitLab OAuth not configured")
+    if links:
+        suffix = " %s." % "; ".join(messages) if messages else ""
+        return "Login with %s to configure repositories.%s" % (" or ".join(links), suffix)
+    return "%s. Set OAuth client id and secret in .env." % "; ".join(messages)
+
+
+def install_github_app_link(settings: Settings, full_name: str) -> str:
+    if settings.github_app_install_url:
+        return '<a class="configure-link" href="{url}">Install GitHub App</a>'.format(
+            url=escape(settings.github_app_install_url)
+        )
+    return '<span class="chip disabled">GitHub App install URL not configured</span>'
+
+
+def report_app_header() -> str:
+    return (
+        '<header class="app-header">'
+        '<a class="app-brand" href="/"><span class="app-brand-mark">C</span><span>Covivy</span></a>'
+        '<nav class="app-nav"><a class="nav-chip" href="/dashboard">Dashboard</a></nav>'
+        "</header>"
+    )
+
+
+def repository_configure_action(
+    provider_repo: ProviderRepository, repository: Optional[Repository], settings: Settings
+) -> str:
+    if repository is not None and repository.installation_id:
+        return '<a href="/dashboard/repos/{repo_id}/settings">Configured</a>'.format(
+            repo_id=repository.id
+        )
+    if provider_repo.provider == "github":
+        if repository is not None:
+            return "Waiting for GitHub App installation. " + install_github_app_link(
+                settings, provider_repo.full_name
+            )
+        return (
+            '<form method="post" action="/dashboard/onboard">'
+            '<input type="hidden" name="provider" value="{provider}">'
+            '<input type="hidden" name="provider_repo_id" value="{repo_id}">'
+            '<input type="hidden" name="full_name" value="{full_name}">'
+            '<input type="hidden" name="default_branch" value="{branch}">'
+            '<input type="hidden" name="private" value="{private}">'
+            '<button type="submit">Install GitHub App</button></form>'
+        ).format(
+            provider=escape(provider_repo.provider),
+            repo_id=escape(provider_repo.external_id),
+            full_name=escape(provider_repo.full_name),
+            branch=escape(provider_repo.default_branch),
+            private=str(provider_repo.private).lower(),
+        )
+    return '<span class="chip disabled">Provider setup coming soon</span>'
 
 
 def pr_header(repository: Repository, pull: PullRequest, report: Optional[CoverageReportRow]) -> str:
@@ -429,18 +696,362 @@ async def github_webhook(
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(session: Session = Depends(get_session)):
-    repositories = session.scalars(select(Repository).order_by(Repository.full_name)).all()
-    rows = "\n".join(
-        '<li><a href="/repos/{owner}/{name}">{full_name}</a> '
-        '<code>POST /api/v1/repos/{owner}/{name}/upload-token</code></li>'.format(
-            owner=repo.owner, name=repo.name, full_name=repo.full_name
-        )
-        for repo in repositories
+def homepage(settings: Settings = Depends(get_settings)):
+    return auth_page(settings, "login")
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_page(settings: Settings = Depends(get_settings)):
+    return auth_page(settings, "register")
+
+
+@app.post("/register", response_class=HTMLResponse)
+def register_user(
+    email: str = Form(...),
+    password: str = Form(...),
+    display_name: Optional[str] = Form(None),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        user = create_dashboard_user(session, settings, email, password, display_name)
+    except ValueError as exc:
+        session.rollback()
+        return auth_page(settings, "register", str(exc))
+    raw_session = create_dashboard_user_session(session, settings, user)
+    session.commit()
+    response = dashboard_layout(
+        "Signed in",
+        '<section class="panel">Signed in as <strong>{email}</strong>. '
+        '<a href="/dashboard">Open repositories</a>.</section>'.format(email=escape(user.email)),
+        settings,
+        True,
     )
-    return HTMLResponse(
-        "<html><body><h1>Coverage Service</h1><h2>Repositories</h2><ul>%s</ul></body></html>"
-        % rows
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_session,
+        httponly=True,
+        samesite="lax",
+        secure=settings.public_base_url.startswith("https://"),
+        max_age=60 * 60 * 24 * 30,
+    )
+    return response
+
+
+@app.post("/login", response_class=HTMLResponse)
+def login_user(
+    email: str = Form(...),
+    password: str = Form(...),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    user = authenticate_dashboard_user(session, settings, email, password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid email or password")
+    raw_session = create_dashboard_user_session(session, settings, user)
+    session.commit()
+    response = dashboard_layout(
+        "Signed in",
+        '<section class="panel">Signed in as <strong>{email}</strong>. '
+        '<a href="/dashboard">Open repositories</a>.</section>'.format(email=escape(user.email)),
+        settings,
+        True,
+    )
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_session,
+        httponly=True,
+        samesite="lax",
+        secure=settings.public_base_url.startswith("https://"),
+        max_age=60 * 60 * 24 * 30,
+    )
+    return response
+
+
+@app.post("/logout")
+def logout():
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+@app.get("/auth/{provider_key}")
+def start_oauth(provider_key: str, settings: Settings = Depends(get_settings)):
+    if provider_key not in provider_keys():
+        raise HTTPException(status_code=404, detail="provider not found")
+    if not provider_configured(provider_key, settings):
+        raise HTTPException(
+            status_code=400,
+            detail="%s OAuth is not configured" % provider_label(provider_key),
+        )
+    provider = get_provider(provider_key)
+    redirect_uri = "%s/auth/%s/callback" % (settings.public_base_url.rstrip("/"), provider_key)
+    state = secrets.token_urlsafe(24)
+    response = RedirectResponse(provider.authorization_url(state, redirect_uri))
+    response.set_cookie(
+        OAUTH_STATE_COOKIE,
+        state,
+        httponly=True,
+        samesite="lax",
+        secure=settings.public_base_url.startswith("https://"),
+        max_age=600,
+    )
+    return response
+
+
+@app.get("/auth/{provider_key}/callback", response_class=HTMLResponse)
+async def oauth_callback(
+    request: Request,
+    provider_key: str,
+    code: str,
+    state: str,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    if provider_key not in provider_keys():
+        raise HTTPException(status_code=404, detail="provider not found")
+    if not provider_configured(provider_key, settings):
+        raise HTTPException(
+            status_code=400,
+            detail="%s OAuth is not configured" % provider_label(provider_key),
+        )
+    if not state or request.cookies.get(OAUTH_STATE_COOKIE) != state:
+        raise HTTPException(status_code=400, detail="invalid oauth state")
+    provider = get_provider(provider_key)
+    redirect_uri = "%s/auth/%s/callback" % (settings.public_base_url.rstrip("/"), provider_key)
+    token = await provider.exchange_code(code, redirect_uri)
+    user = await provider.current_user(token.access_token)
+    identity = upsert_identity_and_token(session, user, token)
+    raw_session = create_dashboard_session(session, settings, identity)
+    session.commit()
+    response = dashboard_layout(
+        "Signed in",
+        '<section class="panel">Signed in as <strong>{login}</strong> with {provider}. '
+        '<a href="/dashboard">Open repositories</a>.</section>'.format(
+            login=escape(identity.login), provider=escape(identity.provider)
+        ),
+        settings,
+        True,
+    )
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_session,
+        httponly=True,
+        samesite="lax",
+        secure=settings.public_base_url.startswith("https://"),
+        max_age=60 * 60 * 24 * 30,
+    )
+    response.delete_cookie(OAUTH_STATE_COOKIE)
+    return response
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def authenticated_dashboard(
+    request: Request,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        session_row = require_dashboard_session(session, settings, request.cookies.get(SESSION_COOKIE))
+    except PermissionError:
+        return auth_page(settings, "login")
+    actor = current_actor_label(session, settings, request.cookies.get(SESSION_COOKIE)) or "user"
+    repos = []
+    identity = session.get(ExternalIdentity, session_row.identity_id) if session_row.identity_id else None
+    if identity is not None:
+        token = token_for_identity(session, identity)
+        repos = await get_provider(identity.provider).list_repositories(token.access_token)
+    onboarded = {
+        (repo.provider, repo.provider_repo_id): repo
+        for repo in session.scalars(select(Repository)).all()
+    }
+    rows = []
+    for repo in repos:
+        existing = onboarded.get((repo.provider, repo.external_id))
+        action = repository_configure_action(repo, existing, settings)
+        rows.append(
+            "<tr><td>{provider}</td><td>{repo}</td><td>{branch}</td><td>{action}</td></tr>".format(
+                provider=escape(repo.provider),
+                repo=escape(repo.full_name),
+                branch=escape(repo.default_branch),
+                action=action,
+            )
+        )
+    if identity is None:
+        for repository in session.scalars(select(Repository).order_by(Repository.full_name)).all():
+            status = (
+                '<a href="/dashboard/repos/{repo_id}/settings">Configured</a>'.format(
+                    repo_id=repository.id
+                )
+                if repository.installation_id
+                else install_github_app_link(settings, repository.full_name)
+            )
+            rows.append(
+                "<tr><td>{provider}</td><td>{repo}</td><td>{branch}</td><td>{action}</td></tr>".format(
+                    provider=escape(repository.provider),
+                    repo=escape(repository.full_name),
+                    branch=escape(repository.default_branch),
+                    action=status,
+                )
+            )
+    body = (
+        '<section class="dashboard-card"><h2>Repositories</h2>'
+        '<table><tr><th>Provider</th><th>Repository</th><th>Default branch</th><th>Action</th></tr>'
+        "{rows}</table></section>"
+    ).format(rows="\n".join(rows) or '<tr><td colspan="4">No repositories found.</td></tr>')
+    return dashboard_layout("Repositories for %s" % actor, body, settings, True)
+
+
+@app.post("/dashboard/onboard", response_class=HTMLResponse)
+def onboard_dashboard_repo(
+    request: Request,
+    provider: str = Form(...),
+    provider_repo_id: str = Form(...),
+    full_name: str = Form(...),
+    default_branch: str = Form("main"),
+    private: str = Form("false"),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        require_identity(session, settings, request.cookies.get(SESSION_COOKIE))
+    except PermissionError:
+        raise HTTPException(status_code=401, detail="dashboard login required")
+    owner, name = full_name.rsplit("/", 1)
+    repository, token = onboard_repository(
+        session,
+        settings,
+        ProviderRepository(
+            provider=provider,
+            external_id=provider_repo_id,
+            owner=owner,
+            name=name,
+            full_name=full_name,
+            default_branch=default_branch,
+            private=private == "true",
+        ),
+    )
+    session.commit()
+    token_html = (
+        '<p>Upload token: <code>{token}</code></p>'.format(token=escape(token)) if token else ""
+    )
+    if provider == "github" and repository.installation_id is None:
+        return dashboard_layout(
+            "Waiting for GitHub App installation",
+            '<section class="panel"><h2>Waiting for GitHub App installation</h2>'
+            '<p>{repo} is saved, but Covivy is not active until the GitHub App is installed '
+            "for this repository.</p>{install}</section>".format(
+                repo=escape(repository.full_name),
+                install=install_github_app_link(settings, repository.full_name),
+            ),
+            settings,
+            True,
+        )
+    return dashboard_layout(
+        "Repository settings",
+        '<section class="panel"><h2>Repository settings</h2>'
+        '<p>{repo} is ready.</p>{token}'
+        '<p><a href="/dashboard/repos/{repo_id}/settings">Configure repository</a></p></section>'.format(
+            repo=escape(repository.full_name), token=token_html, repo_id=repository.id
+        ),
+        settings,
+        True,
+    )
+
+
+@app.get("/dashboard/repos/{repository_id}/settings", response_class=HTMLResponse)
+def repository_settings_page(
+    request: Request,
+    repository_id: int,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        require_identity(session, settings, request.cookies.get(SESSION_COOKIE))
+    except PermissionError:
+        raise HTTPException(status_code=401, detail="dashboard login required")
+    repository = session.get(Repository, repository_id)
+    if repository is None:
+        raise HTTPException(status_code=404, detail="repository not found")
+    repo_settings = ensure_repository_settings(session, repository, settings)
+    session.commit()
+    return dashboard_layout(
+        "Repository settings",
+        '<section class="panel"><h2>Repository settings</h2>'
+        '<form method="post">'
+        '<label>Patch target <input name="patch_coverage_target" value="{patch}"></label><br>'
+        '<label>Project target <input name="project_coverage_target" value="{project}"></label><br>'
+        '<label>Ignore paths<br><textarea name="ignore_paths" rows="6">{ignore}</textarea></label><br>'
+        '<label><input type="checkbox" name="status_enabled" {status}> Status checks</label><br>'
+        '<label><input type="checkbox" name="comment_enabled" {comment}> PR comments</label><br>'
+        '<button type="submit">Save</button></form>'
+        '<form method="post" action="/dashboard/repos/{repo_id}/rotate-token">'
+        '<button type="submit">Rotate upload token</button></form></section>'.format(
+            patch=repo_settings.patch_coverage_target,
+            project=repo_settings.project_coverage_target,
+            ignore=escape("\n".join(repo_settings.ignore_paths or [])),
+            status="checked" if repo_settings.status_enabled else "",
+            comment="checked" if repo_settings.comment_enabled else "",
+            repo_id=repository.id,
+        ),
+        settings,
+        True,
+    )
+
+
+@app.post("/dashboard/repos/{repository_id}/settings", response_class=HTMLResponse)
+def update_repository_settings_page(
+    request: Request,
+    repository_id: int,
+    patch_coverage_target: float = Form(...),
+    project_coverage_target: float = Form(...),
+    ignore_paths: str = Form(""),
+    status_enabled: Optional[str] = Form(None),
+    comment_enabled: Optional[str] = Form(None),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        require_identity(session, settings, request.cookies.get(SESSION_COOKIE))
+    except PermissionError:
+        raise HTTPException(status_code=401, detail="dashboard login required")
+    repository = session.get(Repository, repository_id)
+    if repository is None:
+        raise HTTPException(status_code=404, detail="repository not found")
+    repo_settings = ensure_repository_settings(session, repository, settings)
+    repo_settings.patch_coverage_target = patch_coverage_target
+    repo_settings.project_coverage_target = project_coverage_target
+    repo_settings.ignore_paths = parse_ignore_paths(ignore_paths)
+    repo_settings.status_enabled = bool_from_form(status_enabled)
+    repo_settings.comment_enabled = bool_from_form(comment_enabled)
+    session.commit()
+    return repository_settings_page(request, repository_id, session, settings)
+
+
+@app.post("/dashboard/repos/{repository_id}/rotate-token", response_class=HTMLResponse)
+def rotate_dashboard_token(
+    request: Request,
+    repository_id: int,
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+):
+    try:
+        require_identity(session, settings, request.cookies.get(SESSION_COOKIE))
+    except PermissionError:
+        raise HTTPException(status_code=401, detail="dashboard login required")
+    repository = session.get(Repository, repository_id)
+    if repository is None:
+        raise HTTPException(status_code=404, detail="repository not found")
+    token = rotate_repository_upload_token(session, settings, repository.owner, repository.name)
+    session.commit()
+    return dashboard_layout(
+        "Upload token rotated",
+        '<section class="panel"><h2>Upload token rotated</h2>'
+        '<p>{repo}</p><p><code>{token}</code></p></section>'.format(
+            repo=escape(repository.full_name), token=escape(token)
+        ),
+        settings,
+        True,
     )
 
 
@@ -584,12 +1195,16 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
             status=annotation.status,
         )
     body = (
-        '<main class="coverage-page">'
+        '<main class="app-shell">'
+        "{app_header}"
+        '<section class="dashboard-hero">'
         "{header}"
+        "</section>"
         '<nav class="tabs"><span class="tab active">Summary</span>'
         '<a class="tab" href="/repos/{owner}/{repo}/pulls/{number}/files">Changed files</a></nav>'
         "{coverage}<h2>Coverage report commit</h2>{patch}</main>"
     ).format(
+        app_header=report_app_header(),
         header=pr_header(repository, pull, report),
         owner=owner,
         repo=repo,
@@ -597,7 +1212,7 @@ def pull_dashboard(owner: str, repo: str, number: int, session: Session = Depend
         coverage=coverage_html,
         patch=patch_html,
     )
-    return HTMLResponse(page_html("PR #%s coverage" % pull.github_pr_number, body))
+    return HTMLResponse(app_page_html("PR #%s coverage" % pull.github_pr_number, body))
 
 
 @app.get("/repos/{owner}/{repo}/pulls/{number}/files", response_class=HTMLResponse)
@@ -687,16 +1302,20 @@ def pull_file_dashboard(owner: str, repo: str, number: int, session: Session = D
         missing=metric_card("Total missing changed lines", str(missing_count), class_name="fail"),
     )
     body = (
-        '<main class="coverage-page">'
+        '<main class="app-shell">'
+        "{app_header}"
+        '<section class="dashboard-hero">'
         "{header}"
+        "</section>"
         '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
         '<span class="tab active">Changed files</span></nav>'
-        "{summary}<section class=\"panel\"><h2>Changed file coverage</h2>{files_summary}"
+        "{summary}<section class=\"dashboard-card\"><h2>Changed file coverage</h2>{files_summary}"
         '<table class="changed-files-table"><tr><th>File</th><th>Changed lines</th>'
         '<th>Patch coverage</th><th>Missing</th><th>Status</th></tr>{rows}</table></section>'
-        '<section class="panel"><h2>File coverage details</h2>{diff_sections}</section>'
+        '<section class="dashboard-card"><h2>File coverage details</h2>{diff_sections}</section>'
         "</main>"
     ).format(
+        app_header=report_app_header(),
         header=pr_header(repository, pull, report),
         owner=owner,
         repo=repo,
@@ -706,7 +1325,7 @@ def pull_file_dashboard(owner: str, repo: str, number: int, session: Session = D
         rows=rows,
         diff_sections=diff_sections or '<p>No changed file coverage available.</p>',
     )
-    return HTMLResponse(page_html("PR #%s changed files" % number, body))
+    return HTMLResponse(app_page_html("PR #%s changed files" % number, body))
 
 
 @app.get("/repos/{owner}/{repo}/pulls/{number}/files/{file_path:path}", response_class=HTMLResponse)
@@ -756,15 +1375,19 @@ def pull_single_file_dashboard(
     ).all()
     target = get_settings().patch_coverage_minimum
     body = (
-        '<main class="coverage-page">'
+        '<main class="app-shell">'
+        "{app_header}"
+        '<section class="dashboard-hero">'
         "{header}"
+        "</section>"
         '<nav class="tabs"><a class="tab" href="/repos/{owner}/{repo}/pulls/{number}">Summary</a>'
         '<a class="tab" href="/repos/{owner}/{repo}/pulls/{number}/files">Changed files</a>'
         '<span class="tab active">File view</span></nav>'
-        '<section class="panel"><h2>{path} line coverage</h2>'
+        '<section class="dashboard-card"><h2>{path} line coverage</h2>'
         '<div class="metric-grid">{metric}</div></section>'
-        '<section class="panel">{diff}</section></main>'
+        '<section class="dashboard-card">{diff}</section></main>'
     ).format(
+        app_header=report_app_header(),
         header=pr_header(repository, pull, report),
         owner=owner,
         repo=repo,
@@ -777,4 +1400,4 @@ def pull_single_file_dashboard(
         ),
         diff=file_diff_html(file, line_rows, target),
     )
-    return HTMLResponse(page_html("%s coverage" % file.path, body))
+    return HTMLResponse(app_page_html("%s coverage" % file.path, body))

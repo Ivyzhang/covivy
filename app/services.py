@@ -27,6 +27,7 @@ from app.models import (
     PrFileLineAnnotation,
     PullRequest,
     Repository,
+    RepositorySettings,
     Upload,
 )
 from app.security import generate_upload_token, hash_upload_token, verify_upload_token
@@ -125,6 +126,8 @@ def upsert_installed_repository(
         session.add(repository)
     repository.installation_id = installation.id
     repository.github_repo_id = repo_data["id"]
+    repository.provider = "github"
+    repository.provider_repo_id = str(repo_data["id"])
     repository.default_branch = repo_data.get("default_branch") or repository.default_branch or "main"
     repository.private = bool(repo_data.get("private"))
     repository.active = True
@@ -265,6 +268,26 @@ def rotate_repository_upload_token(
     token = generate_upload_token()
     repository.upload_token_hash = hash_upload_token(token, settings.upload_token_pepper)
     return token
+
+
+def settings_for_repository(
+    session: Session, repository: Repository, settings: Settings
+) -> RepositorySettings:
+    row = session.scalar(
+        select(RepositorySettings).where(RepositorySettings.repository_id == repository.id)
+    )
+    if row is None:
+        row = RepositorySettings(
+            repository_id=repository.id,
+            patch_coverage_target=settings.patch_coverage_minimum,
+            project_coverage_target=settings.patch_coverage_minimum,
+            ignore_paths=[],
+            status_enabled=True,
+            comment_enabled=True,
+        )
+        session.add(row)
+        session.flush()
+    return row
 
 
 def find_related_pull_request(
@@ -523,6 +546,7 @@ async def update_github_pr(
     report_row: CoverageReportRow,
 ) -> Optional[PrAnnotation]:
     repository = session.get(Repository, pull_request.repository_id)
+    repo_settings = settings_for_repository(session, repository, settings)
     pr_payload = await installation_client.pull_request(
         repository.owner, repository.name, pull_request.github_pr_number
     )
@@ -557,9 +581,10 @@ async def update_github_pr(
         repository.name,
         pull_request.github_pr_number,
     )
-    description = result.description_for_target(settings.patch_coverage_minimum)
-    state = result.status_for_target(settings.patch_coverage_minimum)
-    if settings.github_commit_status_enabled:
+    patch_target = repo_settings.patch_coverage_target
+    description = result.description_for_target(patch_target)
+    state = result.status_for_target(patch_target)
+    if settings.github_commit_status_enabled and repo_settings.status_enabled:
         await installation_client.create_status(
             repository.owner,
             repository.name,
@@ -584,17 +609,19 @@ async def update_github_pr(
         result,
         report_row.covered_lines,
         report_row.total_lines,
-        settings.patch_coverage_minimum,
+        patch_target,
         target_url,
         base_report.line_rate if base_report else None,
     )
-    comment_id = await installation_client.upsert_pr_comment(
-        repository.owner,
-        repository.name,
-        pull_request.github_pr_number,
-        body,
-        annotation.github_comment_id if annotation else None,
-    )
+    comment_id = annotation.github_comment_id if annotation else None
+    if repo_settings.comment_enabled:
+        comment_id = await installation_client.upsert_pr_comment(
+            repository.owner,
+            repository.name,
+            pull_request.github_pr_number,
+            body,
+            annotation.github_comment_id if annotation else None,
+        )
     if annotation is None:
         annotation = PrAnnotation(pull_request_id=pull_request.id, report_id=report_row.id)
         session.add(annotation)
@@ -646,6 +673,7 @@ async def update_github_pending_coverage(
     pull_request: PullRequest,
 ) -> None:
     repository = session.get(Repository, pull_request.repository_id)
+    repo_settings = settings_for_repository(session, repository, settings)
     pr_payload = await installation_client.pull_request(
         repository.owner, repository.name, pull_request.github_pr_number
     )
@@ -659,7 +687,7 @@ async def update_github_pending_coverage(
         pull_request.github_pr_number,
     )
     description = "Waiting for coverage report for head %s" % pull_request.head_sha[:12]
-    if settings.github_commit_status_enabled:
+    if settings.github_commit_status_enabled and repo_settings.status_enabled:
         await installation_client.create_status(
             repository.owner,
             repository.name,
@@ -674,13 +702,14 @@ async def update_github_pending_coverage(
         .order_by(PrAnnotation.updated_at.desc())
         .limit(1)
     )
-    await installation_client.upsert_pr_comment(
-        repository.owner,
-        repository.name,
-        pull_request.github_pr_number,
-        render_pending_pr_comment(pull_request.head_sha, target_url),
-        annotation.github_comment_id if annotation else None,
-    )
+    if repo_settings.comment_enabled:
+        await installation_client.upsert_pr_comment(
+            repository.owner,
+            repository.name,
+            pull_request.github_pr_number,
+            render_pending_pr_comment(pull_request.head_sha, target_url),
+            annotation.github_comment_id if annotation else None,
+        )
 
 
 async def update_github_failure_status(
@@ -691,6 +720,7 @@ async def update_github_failure_status(
     upload: Upload,
 ) -> None:
     repository = session.get(Repository, pull_request.repository_id)
+    repo_settings = settings_for_repository(session, repository, settings)
     target_url = "%s/repos/%s/%s/pulls/%s" % (
         settings.public_base_url.rstrip("/"),
         repository.owner,
@@ -700,7 +730,7 @@ async def update_github_failure_status(
     message = "Coverage report parsing failed"
     if upload.error_message:
         message = "%s: %s" % (message, upload.error_message)
-    if settings.github_commit_status_enabled:
+    if settings.github_commit_status_enabled and repo_settings.status_enabled:
         await installation_client.create_status(
             repository.owner,
             repository.name,
@@ -709,7 +739,7 @@ async def update_github_failure_status(
             message,
             target_url,
         )
-    else:
+    elif repo_settings.comment_enabled:
         await installation_client.upsert_pr_comment(
             repository.owner,
             repository.name,
