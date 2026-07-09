@@ -215,7 +215,7 @@ def parse_go_coverprofile(
             continue
         match = _GO_COVER_RE.match(line)
         if not match:
-            raise ValueError("invalid Go coverprofile record")
+            raise ValueError(f"invalid Go coverprofile record: {line!r}")
         path = normalize_path(match.group("path"), workspace_prefixes)
         start_line = int(match.group("start_line"))
         end_line = int(match.group("end_line"))
