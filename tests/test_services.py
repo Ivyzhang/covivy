@@ -22,6 +22,7 @@ from app.models import (
     PrFileLineAnnotation,
     PullRequest,
     Repository,
+    RepositorySettings,
     Upload,
 )
 from app.security import hash_upload_token
@@ -559,6 +560,81 @@ class ServiceTests(unittest.TestCase):
             [(line.line_number, line.covered, line.line_content) for line in stored_lines],
             [(9, True, "covered"), (10, True, "missed"), (11, False, "ignored")],
         )
+
+    def test_update_github_pr_honors_repository_status_and_comment_toggles(self):
+        with self.Session() as session:
+            repository = Repository(
+                owner="octo",
+                name="demo",
+                full_name="octo/demo",
+                default_branch="main",
+                private=False,
+            )
+            session.add(repository)
+            session.flush()
+            session.add(
+                RepositorySettings(
+                    repository_id=repository.id,
+                    patch_coverage_target=0.5,
+                    project_coverage_target=0.5,
+                    ignore_paths=[],
+                    status_enabled=False,
+                    comment_enabled=False,
+                )
+            )
+            commit = Commit(repository_id=repository.id, sha="abc123", branch="feature")
+            session.add(commit)
+            session.flush()
+            pull = PullRequest(
+                repository_id=repository.id,
+                github_pr_number=7,
+                head_sha="abc123",
+                base_sha="base123",
+                state="open",
+                title="Add API",
+            )
+            upload = Upload(
+                repository_id=repository.id,
+                commit_id=commit.id,
+                format="cobertura",
+                storage_path=str(Path(self.tmpdir.name) / "coverage.xml"),
+                status="processed",
+            )
+            session.add_all([pull, upload])
+            session.flush()
+            report = CoverageReportRow(
+                repository_id=repository.id,
+                commit_id=commit.id,
+                upload_id=upload.id,
+                line_rate=2 / 3,
+                covered_lines=2,
+                total_lines=3,
+            )
+            from app.models import FileCoverage, LineCoverage
+
+            file_row = FileCoverage(
+                path="src/api.py",
+                line_rate=2 / 3,
+                covered_lines=2,
+                total_lines=3,
+            )
+            file_row.lines.extend(
+                [
+                    LineCoverage(line_number=9, hits=1),
+                    LineCoverage(line_number=10, hits=1),
+                    LineCoverage(line_number=11, hits=0),
+                ]
+            )
+            report.files.append(file_row)
+            session.add(report)
+            session.flush()
+
+            fake = FakeInstallationClient()
+            annotation = asyncio.run(update_github_pr(session, self.settings, fake, pull, report))
+
+        self.assertEqual(fake.statuses, [])
+        self.assertEqual(fake.comments, [])
+        self.assertEqual(annotation.status, "success")
 
     def test_render_pr_comment_includes_unmatched_warnings(self):
         from app.coverage import PatchCoverageResult

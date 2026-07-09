@@ -58,6 +58,27 @@ class Settings:
     patch_coverage_minimum: float = field(
         default_factory=lambda: float(os.getenv("PATCH_COVERAGE_MINIMUM", "0.8"))
     )
+    dashboard_session_secret: str = field(
+        default_factory=lambda: os.getenv("DASHBOARD_SESSION_SECRET", "local-dashboard-secret")
+    )
+    github_oauth_client_id: str = field(
+        default_factory=lambda: os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+    )
+    github_oauth_client_secret: str = field(
+        default_factory=lambda: os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
+    )
+    gitlab_oauth_client_id: str = field(
+        default_factory=lambda: os.getenv("GITLAB_OAUTH_CLIENT_ID", "")
+    )
+    gitlab_oauth_client_secret: str = field(
+        default_factory=lambda: os.getenv("GITLAB_OAUTH_CLIENT_SECRET", "")
+    )
+    gitlab_base_url: str = field(
+        default_factory=lambda: os.getenv("GITLAB_BASE_URL", "https://gitlab.com")
+    )
+    github_app_install_url: str = field(
+        default_factory=lambda: os.getenv("GITHUB_APP_INSTALL_URL", "")
+    )
 
 
 def get_settings() -> Settings:

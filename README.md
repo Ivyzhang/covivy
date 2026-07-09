@@ -30,6 +30,12 @@ export UPLOAD_TOKEN_PEPPER="change-me"
 export ADMIN_TOKEN="change-me"
 export GITHUB_COMMIT_STATUS_ENABLED="false"
 export PATCH_COVERAGE_MINIMUM="0.8"
+export DASHBOARD_SESSION_SECRET="change-me"
+export GITHUB_OAUTH_CLIENT_ID=""
+export GITHUB_OAUTH_CLIENT_SECRET=""
+export GITLAB_OAUTH_CLIENT_ID=""
+export GITLAB_OAUTH_CLIENT_SECRET=""
+export GITLAB_BASE_URL="https://gitlab.com"
 ```
 
 Run migrations:
@@ -95,6 +101,24 @@ curl -X POST "http://localhost:8000/api/v1/repos/owner/repo/upload-token" \
 
 The raw token is returned once and should be stored in GitHub Actions as
 `COVERAGE_UPLOAD_TOKEN`.
+
+## Dashboard login and repository settings
+
+The authenticated dashboard is available at `/dashboard`. It supports GitHub and
+GitLab OAuth login, repository onboarding, per-repository patch/project coverage
+targets, ignore path storage, status/comment toggles, and upload token rotation.
+
+Create OAuth applications with these callback URLs:
+
+```text
+$PUBLIC_BASE_URL/auth/github/callback
+$PUBLIC_BASE_URL/auth/gitlab/callback
+```
+
+Set `DASHBOARD_SESSION_SECRET` to a stable random value. Set the matching
+`GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`,
+`GITLAB_OAUTH_CLIENT_ID`, and `GITLAB_OAUTH_CLIENT_SECRET` values for the
+providers you want to enable.
 
 ## GitHub Actions upload script
 
