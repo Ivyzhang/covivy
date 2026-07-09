@@ -161,8 +161,12 @@ def file_diff_anchor(file: PrFileAnnotation) -> str:
     return "file-coverage-%s" % file.id
 
 
+CONTEXT_LINES = 10
+MAX_RENDERED_CONTEXT_LINES = 120
+
+
 def semantic_context_ranges(
-    path: str, source: str, changed_lines: set[int], context: int = 3
+    path: str, source: str, changed_lines: set[int], context: int = CONTEXT_LINES
 ) -> list[tuple[int, int]]:
     if not changed_lines:
         return []
@@ -170,23 +174,34 @@ def semantic_context_ranges(
     max_line = len(source_lines)
     if max_line == 0:
         return []
-    ranges = [
-        (max(1, line - context), min(max_line, line + context)) for line in changed_lines
+    windows = {
+        line: (max(1, line - context), min(max_line, line + context))
+        for line in changed_lines
         if line <= max_line
-    ]
+    }
+    ranges = list(windows.values())
     if path.endswith(".py"):
         try:
             tree = ast.parse(source)
         except SyntaxError:
             tree = None
         if tree is not None:
+            nodes = []
             for node in ast.walk(tree):
                 start = getattr(node, "lineno", None)
                 end = getattr(node, "end_lineno", None)
-                if start is None or end is None:
-                    continue
-                if changed_lines.intersection(range(start, end + 1)):
-                    ranges.append((max(1, start), min(max_line, end)))
+                if start is not None and end is not None:
+                    nodes.append((start, end))
+            for line, (window_start, window_end) in windows.items():
+                containing_nodes = [
+                    (start, end)
+                    for start, end in nodes
+                    if start <= line <= end
+                    and start >= window_start
+                    and end <= window_end
+                ]
+                if containing_nodes:
+                    ranges.append(max(containing_nodes, key=lambda item: item[1] - item[0]))
     ranges.sort()
     merged: list[tuple[int, int]] = []
     for start, end in ranges:
@@ -197,6 +212,45 @@ def semantic_context_ranges(
     return merged
 
 
+def capped_context_ranges(
+    path: str,
+    source: str,
+    line_rows: list[PrFileLineAnnotation],
+    context: int = CONTEXT_LINES,
+    max_rendered_lines: int = MAX_RENDERED_CONTEXT_LINES,
+) -> list[tuple[int, int]]:
+    changed_lines = {line.line_number for line in line_rows}
+    ranges = semantic_context_ranges(path, source, changed_lines, context)
+    if sum(end - start + 1 for start, end in ranges) <= max_rendered_lines:
+        return ranges
+
+    source_line_count = len(source.splitlines())
+    if source_line_count == 0:
+        return []
+    missing_lines = [line.line_number for line in line_rows if not line.covered]
+    covered_lines = [line.line_number for line in line_rows if line.covered]
+    anchors = sorted(missing_lines) + sorted(covered_lines)
+    capped_ranges = []
+    for line in anchors:
+        if line > source_line_count:
+            continue
+        start = max(1, line - context)
+        end = min(source_line_count, line + context)
+        candidate_ranges = capped_ranges + [(start, end)]
+        candidate_ranges.sort()
+        merged = []
+        for candidate_start, candidate_end in candidate_ranges:
+            if not merged or candidate_start > merged[-1][1] + 1:
+                merged.append((candidate_start, candidate_end))
+            else:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], candidate_end))
+        rendered = sum(candidate_end - candidate_start + 1 for candidate_start, candidate_end in merged)
+        if rendered > max_rendered_lines:
+            break
+        capped_ranges = merged
+    return capped_ranges
+
+
 def file_diff_html(
     file: PrFileAnnotation, line_rows: list[PrFileLineAnnotation], target: float
 ) -> str:
@@ -204,7 +258,7 @@ def file_diff_html(
     line_parts = []
     changed_by_line = {line.line_number: line for line in line_rows}
     source_ranges = (
-        semantic_context_ranges(file.path, file.source_content, set(changed_by_line))
+        capped_context_ranges(file.path, file.source_content, line_rows)
         if file.source_content
         else []
     )
