@@ -465,11 +465,14 @@ def typescript_semantic_analysis_from_source(
         result = json.loads(completed.stdout)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         return {}, set(), False
-    decisions = {
-        int(line): bool(covered)
-        for line, covered in (result.get("lineDecisions") or {}).items()
-    }
-    non_code_lines = {int(line) for line in result.get("nonCodeLines") or []}
+    try:
+        decisions = {
+            int(line): bool(covered)
+            for line, covered in (result.get("lineDecisions") or {}).items()
+        }
+        non_code_lines = {int(line) for line in result.get("nonCodeLines") or []}
+    except (TypeError, ValueError):
+        return {}, set(), False
     return decisions, non_code_lines, True
 
 
