@@ -344,16 +344,22 @@ def non_code_lines_from_source(path: str, source: str) -> Set[int]:
             non_code.add(line_number)
             continue
         if path.endswith((".go", ".js", ".jsx", ".ts", ".tsx")):
-            if path.endswith(".go") and stripped in {"}", "{", "})", "};"}:
-                non_code.add(line_number)
-                continue
             if stripped.startswith("//"):
                 non_code.add(line_number)
                 continue
-            if stripped.startswith("/*"):
-                if "*/" not in stripped or not stripped.split("*/", 1)[1].strip():
+            if path.endswith(".go"):
+                code_part = stripped.split("//", 1)[0].strip()
+                if code_part in {"}", "{", "})", "};"}:
                     non_code.add(line_number)
-                if "*/" not in stripped:
+                    continue
+            block_start = stripped.find("/*")
+            if block_start != -1:
+                before = stripped[:block_start].strip()
+                block_end = stripped.find("*/", block_start + 2)
+                after = stripped[block_end + 2 :].strip() if block_end != -1 else ""
+                if not before and (block_end == -1 or not after):
+                    non_code.add(line_number)
+                if block_end == -1:
                     in_block_comment = True
                 continue
     return non_code
