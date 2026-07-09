@@ -37,37 +37,57 @@ function addRange(target, start, end) {
 }
 
 function addCommentAndBlankLines(source, nonCodeLines) {
-  let inBlockComment = false;
   const lines = source.split(/\r?\n/);
-  lines.forEach((line, index) => {
-    const lineNumber = index + 1;
-    const trimmed = line.trim();
-    if (!trimmed) {
-      nonCodeLines.add(lineNumber);
-      return;
+
+  // Build line-start offsets for mapping character positions to line numbers
+  const lineStarts = [];
+  let off = 0;
+  for (const line of lines) {
+    lineStarts.push(off);
+    off += line.length + 1;
+  }
+
+  function lineOfPos(offset) {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
     }
-    if (inBlockComment) {
-      nonCodeLines.add(lineNumber);
-      if (trimmed.includes("*/")) {
-        inBlockComment = false;
-        const after = trimmed.split("*/", 2)[1].trim();
-        if (after) nonCodeLines.delete(lineNumber);
-      }
-      return;
-    }
-    if (trimmed.startsWith("//")) {
-      nonCodeLines.add(lineNumber);
-      return;
-    }
-    const blockStart = line.indexOf("/*");
-    if (blockStart !== -1) {
-      const before = line.slice(0, blockStart).trim();
-      const blockEnd = line.indexOf("*/", blockStart + 2);
-      const after = blockEnd !== -1 ? line.slice(blockEnd + 2).trim() : "";
-      if (!before && (blockEnd === -1 || !after)) nonCodeLines.add(lineNumber);
-      if (blockEnd === -1) inBlockComment = true;
-    }
+    return lo + 1;
+  }
+
+  // Mark blank lines
+  lines.forEach((line, i) => {
+    if (!line.trim()) nonCodeLines.add(i + 1);
   });
+
+  // Use TypeScript's scanner to find comment tokens. This correctly skips
+  // "/*" or "*/" that appear inside string/template literals or regular
+  // expressions, preventing false inBlockComment flips.
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false);
+  scanner.setText(source);
+  const codeLines = new Set();
+  let kind;
+  while ((kind = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      kind === ts.SyntaxKind.SingleLineCommentTrivia ||
+      kind === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      const startLine = lineOfPos(scanner.getTokenStart());
+      const endLine = lineOfPos(scanner.getTokenEnd() - 1);
+      for (let l = startLine; l <= endLine; l++) {
+        if (!codeLines.has(l)) nonCodeLines.add(l);
+      }
+    } else if (
+      kind !== ts.SyntaxKind.WhitespaceTrivia &&
+      kind !== ts.SyntaxKind.NewLineTrivia
+    ) {
+      const l = lineOfPos(scanner.getTokenStart());
+      codeLines.add(l);
+      nonCodeLines.delete(l);
+    }
+  }
 }
 
 function isTypeOnlyImport(node) {
