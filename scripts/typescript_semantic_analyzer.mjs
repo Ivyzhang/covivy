@@ -176,21 +176,20 @@ function analyze(payload) {
       addRange(nonCodeLines, span.start, span.end);
     }
     if (!isCoverageUnit(node)) return;
-    for (const line of changedLines) {
-      if (span.start <= line && line <= span.end) {
-        const previous = nodeByLine.get(line);
-        if (!previous) {
-          nodeByLine.set(line, node);
-          continue;
-        }
-        const previousSpan = lineSpan(sourceFile, previous);
-        if (
-          span.end - span.start < previousSpan.end - previousSpan.start ||
-          (span.end - span.start === previousSpan.end - previousSpan.start &&
-            node.getWidth(sourceFile) < previous.getWidth(sourceFile))
-        ) {
-          nodeByLine.set(line, node);
-        }
+    for (let line = span.start; line <= span.end; line++) {
+      if (!changedLines.has(line)) continue;
+      const previous = nodeByLine.get(line);
+      if (!previous) {
+        nodeByLine.set(line, node);
+        continue;
+      }
+      const previousSpan = lineSpan(sourceFile, previous);
+      if (
+        span.end - span.start < previousSpan.end - previousSpan.start ||
+        (span.end - span.start === previousSpan.end - previousSpan.start &&
+          node.getWidth(sourceFile) < previous.getWidth(sourceFile))
+      ) {
+        nodeByLine.set(line, node);
       }
     }
   });
