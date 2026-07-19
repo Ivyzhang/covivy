@@ -548,8 +548,10 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("| Metric | Covered | Coverage |", fake.comments[0]["body"])
         self.assertIn("| Covered changed lines | 2 / 3 | 66.67% ❌ |", fake.comments[0]["body"])
         self.assertIn("| Project coverage | 2 / 3 | 66.67% 🟢 ↑ |", fake.comments[0]["body"])
-        self.assertIn("Changed file coverage", fake.comments[0]["body"])
-        self.assertIn("/repos/octo/demo/pulls/7/files", fake.comments[0]["body"])
+        self.assertIn("View coverage report on Covivy-Coverage", fake.comments[0]["body"])
+        self.assertIn("/repos/octo/demo/pulls/7", fake.comments[0]["body"])
+        self.assertNotIn("Changed file coverage", fake.comments[0]["body"])
+        self.assertNotIn("/repos/octo/demo/pulls/7/files", fake.comments[0]["body"])
         self.assertNotIn("| src/api.py | 2 / 3 | 66.67% |", fake.comments[0]["body"])
         self.assertEqual(stored.patch_covered_lines, 2)
         self.assertEqual(stored.patch_total_lines, 3)
@@ -659,6 +661,27 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("Project coverage | 14 / 17 | 82.35% 🔴 ↓", body)
         self.assertIn("No coverable changed lines found.", body)
         self.assertIn("docs/readme.md did not match any coverage file", body)
+
+    def test_render_pr_comment_uses_single_covivy_report_link(self):
+        from app.coverage import PatchCoverageResult
+
+        result = PatchCoverageResult(
+            patch_covered_lines=8,
+            patch_total_lines=10,
+            files=[],
+        )
+
+        body = render_pr_comment(
+            result,
+            project_covered_lines=90,
+            project_total_lines=100,
+            target=0.8,
+            url="https://coverage.example/repos/octo/demo/pulls/7",
+        )
+
+        self.assertIn("[View coverage report on Covivy-Coverage](https://coverage.example/repos/octo/demo/pulls/7)", body)
+        self.assertNotIn("Changed file coverage", body)
+        self.assertNotIn("View full report", body)
 
     def test_update_github_pr_skips_stale_upload_when_pr_head_changed(self):
         with self.Session() as session:

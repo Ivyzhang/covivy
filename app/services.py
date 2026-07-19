@@ -490,8 +490,6 @@ def render_pr_comment(
         ),
         "",
     ]
-    if result.files:
-        lines.extend(["[Changed file coverage](%s/files)" % url, ""])
     if result.patch_total_lines == 0:
         lines.extend(["No coverable changed lines found.", ""])
     if result.warnings:
@@ -503,7 +501,7 @@ def render_pr_comment(
         [
             "Status: %s. Patch coverage target is %.2f%%." % (status, target * 100),
             "",
-            "[View full report](%s)" % url,
+            "[View coverage report on Covivy-Coverage](%s)" % url,
         ]
     )
     return "\n".join(lines)
@@ -518,7 +516,7 @@ def render_failure_pr_comment(message: str, url: str) -> str:
             "",
             "Status: failed. %s" % message,
             "",
-            "[View full report](%s)" % url,
+            "[View coverage report on Covivy-Coverage](%s)" % url,
         ]
     )
 
@@ -533,7 +531,7 @@ def render_pending_pr_comment(head_sha: str, url: str) -> str:
             "",
             "Waiting for coverage report for head commit `%s`." % short_sha,
             "",
-            "[View full report](%s)" % url,
+            "[View coverage report on Covivy-Coverage](%s)" % url,
         ]
     )
 
@@ -649,6 +647,7 @@ async def update_github_pr(
             path=file_result.path,
             patch_covered_lines=file_result.patch_covered_lines,
             patch_total_lines=file_result.patch_total_lines,
+            source_content=source_by_file.get(file_result.path),
         )
         session.add(file_annotation)
         session.flush()

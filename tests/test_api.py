@@ -404,8 +404,16 @@ class ApiTests(unittest.TestCase):
                 path="src/api.py",
                 patch_covered_lines=1,
                 patch_total_lines=2,
+                source_content="def api():\n    return ok\n    return missing\n",
             )
-            session.add(file_annotation)
+            second_file_annotation = PrFileAnnotation(
+                annotation_id=annotation.id,
+                path="src/worker.py",
+                patch_covered_lines=1,
+                patch_total_lines=1,
+                source_content="def worker():\n    worker covered\n",
+            )
+            session.add_all([file_annotation, second_file_annotation])
             session.flush()
             session.add_all(
                 [
@@ -420,6 +428,12 @@ class ApiTests(unittest.TestCase):
                         line_number=2,
                         covered=False,
                         line_content="return missing",
+                    ),
+                    PrFileLineAnnotation(
+                        file_annotation_id=second_file_annotation.id,
+                        line_number=10,
+                        covered=True,
+                        line_content="worker covered",
                     ),
                 ]
             )
@@ -444,21 +458,20 @@ class ApiTests(unittest.TestCase):
         self.assertIn("Covivy", pull_response.text)
         self.assertIn("summary-card", pull_response.text)
         self.assertIn("metric-grid", pull_response.text)
-        self.assertIn("Covered changed lines", pull_response.text)
+        self.assertIn("Changed lines", pull_response.text)
         self.assertIn("Project coverage", pull_response.text)
         self.assertIn("Coverage change", pull_response.text)
-        self.assertIn("Coverage report commit", pull_response.text)
-        self.assertIn("abc123", pull_response.text)
-        self.assertIn("Base commit", pull_response.text)
-        self.assertIn("base123", pull_response.text)
-        self.assertIn("<th>Metric</th><th>Covered</th><th>Coverage</th>", pull_response.text)
+        self.assertIn("Coverage summary", pull_response.text)
+        self.assertNotIn("Coverage report commit", pull_response.text)
+        self.assertNotIn("Base commit", pull_response.text)
+        self.assertNotIn("PR head commit", pull_response.text)
+        self.assertNotIn("abc123", pull_response.text)
+        self.assertNotIn("base123", pull_response.text)
         self.assertIn("status-fail", pull_response.text)
         self.assertIn("✗", pull_response.text)
-        self.assertIn("<td>Covered changed lines</td><td>1 / 2</td><td>50.00%", pull_response.text)
         self.assertIn("trend-up", pull_response.text)
         self.assertIn("↑", pull_response.text)
-        self.assertIn("<td>Project coverage</td><td>1 / 2</td><td>50.00%", pull_response.text)
-        self.assertIn("Changed file coverage", pull_response.text)
+        self.assertIn("View changed file details", pull_response.text)
         self.assertIn("/repos/octo/demo/pulls/7/files", pull_response.text)
         self.assertNotIn("src/api.py</td>", pull_response.text)
         self.assertIn("50.00%", pull_response.text)
@@ -476,9 +489,9 @@ class ApiTests(unittest.TestCase):
         self.assertIn("diff-line-covered", files_response.text)
         self.assertIn("diff-line-missing", files_response.text)
         self.assertIn("Files failing target", files_response.text)
-        self.assertIn("Total missing changed lines", files_response.text)
-        self.assertIn('<a href="#file-coverage-', files_response.text)
-        self.assertIn(">src/api.py</a>", files_response.text)
+        self.assertIn("Missing changed lines", files_response.text)
+        self.assertIn("/repos/octo/demo/pulls/7/files/src/api.py", files_response.text)
+        self.assertIn(">› src/api.py</a>", files_response.text)
         self.assertIn("<td>1 / 2</td>", files_response.text)
         self.assertIn("<td>50.00%", files_response.text)
         self.assertIn("<td>1</td>", files_response.text)
@@ -487,6 +500,19 @@ class ApiTests(unittest.TestCase):
         self.assertIn("src/api.py line coverage", files_response.text)
         self.assertIn("return ok", files_response.text)
         self.assertIn("return missing", files_response.text)
+        self.assertIn(">› src/worker.py</a>", files_response.text)
+        self.assertNotIn("src/worker.py line coverage", files_response.text)
+        self.assertNotIn("worker covered", files_response.text)
+
+        selected_file_response = self.client.get("/repos/octo/demo/pulls/7/files/src/worker.py")
+        self.assertEqual(selected_file_response.status_code, 200)
+        self.assertIn("Changed file coverage", selected_file_response.text)
+        self.assertIn(">› src/api.py</a>", selected_file_response.text)
+        self.assertIn(">› src/worker.py</a>", selected_file_response.text)
+        self.assertIn("src/worker.py line coverage", selected_file_response.text)
+        self.assertIn("worker covered", selected_file_response.text)
+        self.assertNotIn("src/api.py line coverage", selected_file_response.text)
+        self.assertNotIn("return missing", selected_file_response.text)
 
     def test_pull_dashboard_explains_missing_base_report_for_project_trend(self):
         with self.Session() as session:
