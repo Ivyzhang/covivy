@@ -7,7 +7,12 @@ from urllib.parse import urlencode
 import httpx
 
 from app.github import PullFilePatch
-from app.providers.base import OAuthTokenResult, ProviderRepository, ProviderUser
+from app.providers.base import (
+    OAuthTokenRefreshError,
+    OAuthTokenResult,
+    ProviderRepository,
+    ProviderUser,
+)
 
 
 class GitHubProvider:
@@ -54,6 +59,33 @@ class GitHubProvider:
             )
             response.raise_for_status()
         data = response.json()
+        expires_at = None
+        if data.get("expires_in"):
+            expires_at = datetime.utcnow() + timedelta(seconds=int(data["expires_in"]))
+        return OAuthTokenResult(
+            access_token=data["access_token"],
+            refresh_token=data.get("refresh_token"),
+            expires_at=expires_at,
+            scope=data.get("scope"),
+        )
+
+    async def refresh_access_token(self, refresh_token: str) -> OAuthTokenResult:
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+        }
+        async with httpx.AsyncClient(timeout=20, transport=self.transport) as client:
+            response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                json=payload,
+                headers={"Accept": "application/json"},
+            )
+            response.raise_for_status()
+        data = response.json()
+        if data.get("error") or not data.get("access_token"):
+            raise OAuthTokenRefreshError(data.get("error") or "missing_access_token")
         expires_at = None
         if data.get("expires_in"):
             expires_at = datetime.utcnow() + timedelta(seconds=int(data["expires_in"]))

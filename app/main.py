@@ -4,6 +4,7 @@ import secrets
 from html import escape
 from typing import Optional
 
+import httpx
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.responses import RedirectResponse
@@ -21,9 +22,9 @@ from app.dashboard import (
     ensure_repository_settings,
     onboard_repository,
     parse_ignore_paths,
+    refresh_token_for_identity,
     require_dashboard_session,
     require_identity,
-    token_for_identity,
     upsert_identity_and_token,
 )
 from app.db import get_session
@@ -37,7 +38,7 @@ from app.models import (
     PullRequest,
     Repository,
 )
-from app.providers.base import ProviderRepository
+from app.providers.base import OAuthTokenRefreshError, ProviderRepository
 from app.providers.registry import get_provider, provider_keys
 from app.security import verify_github_signature
 from app.services import (
@@ -240,6 +241,24 @@ def auth_page_html(title: str, body: str) -> str:
         "padding:12px;border-radius:6px;margin-bottom:16px}@media(max-width:980px){.auth-page{grid-template-columns:1fr;padding:110px 20px 24px}.trust-panel{justify-self:stretch}.auth-card{padding:32px 24px}.auth-actions{grid-template-columns:1fr}.brand{font-size:32px}}"
         "</style></head><body>" + body + "</body></html>"
     )
+
+
+def provider_reauthentication_response(
+    session: Session, session_row, settings: Settings
+) -> HTMLResponse:
+    session.delete(session_row)
+    session.commit()
+    response = auth_page(
+        settings,
+        "login",
+        "Your provider session expired. Please sign in again.",
+    )
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+def is_refresh_rejection(exc: httpx.HTTPStatusError) -> bool:
+    return exc.response.status_code in {400, 401}
 
 
 def provider_configured(provider_key: str, settings: Settings) -> bool:
@@ -682,8 +701,43 @@ async def authenticated_dashboard(
     repos = []
     identity = session.get(ExternalIdentity, session_row.identity_id) if session_row.identity_id else None
     if identity is not None:
-        token = token_for_identity(session, identity)
-        repos = await get_provider(identity.provider).list_repositories(token.access_token)
+        provider = get_provider(identity.provider)
+        try:
+            token = await refresh_token_for_identity(session, identity, provider)
+        except (OAuthTokenRefreshError, PermissionError):
+            return provider_reauthentication_response(session, session_row, settings)
+        except httpx.HTTPStatusError as exc:
+            if not is_refresh_rejection(exc):
+                raise
+            return provider_reauthentication_response(session, session_row, settings)
+        session.commit()
+        try:
+            repos = await provider.list_repositories(token.access_token)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 401:
+                raise
+            failed_access_token = token.access_token
+            try:
+                token = await refresh_token_for_identity(
+                    session,
+                    identity,
+                    provider,
+                    force=True,
+                    failed_access_token=failed_access_token,
+                )
+            except (OAuthTokenRefreshError, PermissionError):
+                return provider_reauthentication_response(session, session_row, settings)
+            except httpx.HTTPStatusError as refresh_exc:
+                if not is_refresh_rejection(refresh_exc):
+                    raise
+                return provider_reauthentication_response(session, session_row, settings)
+            session.commit()
+            try:
+                repos = await provider.list_repositories(token.access_token)
+            except httpx.HTTPStatusError as retry_exc:
+                if retry_exc.response.status_code != 401:
+                    raise
+                return provider_reauthentication_response(session, session_row, settings)
     onboarded = {
         (repo.provider, repo.provider_repo_id): repo
         for repo in session.scalars(select(Repository)).all()

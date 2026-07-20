@@ -102,7 +102,7 @@ For source-aware analysis:
 
 ## Tech Stack
 
-- Python 3.10+ and FastAPI
+- Python 3.9+ and FastAPI
 - SQLAlchemy 2 and Alembic
 - PostgreSQL 16
 - `httpx`, PyJWT, and GitHub App installation tokens
@@ -115,7 +115,7 @@ For source-aware analysis:
 
 ### Prerequisites
 
-- Python 3.10 or newer
+- Python 3.9 or newer
 - Node.js and npm for JavaScript/TypeScript semantic analysis
 - Docker with Docker Compose for the local PostgreSQL service
 
