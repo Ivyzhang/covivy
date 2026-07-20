@@ -1,0 +1,9 @@
+title: Covivy
+description: 面向 Pull Request 的自托管代码覆盖率服务
+lang: zh-CN
+theme: jekyll-theme-minimal
+show_downloads: true
+github:
+  repository_url: https://github.com/Ivyzhang/covivy
+  owner_url: https://github.com/Ivyzhang
+
