@@ -198,15 +198,3 @@ Covivy 想做的事情很简单：当一个 PR 说“我准备好了”，给 re
 
 ---
 
-## 把这篇文章发布到 GitHub Pages
-
-本文已经放在仓库的 `docs/index.md`。将变更推送到 GitHub 后：
-
-1. 打开仓库的 **Settings**。
-2. 在左侧选择 **Pages**。
-3. 在 **Build and deployment** 的 Source 中选择 **Deploy from a branch**。
-4. Branch 选择要发布的分支（通常为 `main`），目录选择 `/docs`。
-5. 点击 **Save**，等待 GitHub Actions/Pages 完成部署。
-6. 访问 `https://ivyzhang.github.io/covivy/`。
-
-更完整的发布、更新和排错说明见 [GitHub Pages 发布指南](GITHUB_PAGES.html)。
