@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" role="img" aria-labelledby="title desc">
+  <title id="title">Covivy 从 CI 到 Pull Request 反馈的流程</title>
+  <desc id="desc">CI 上传覆盖率报告，API 保存数据并创建任务，Worker 调用语义覆盖率引擎，最后将结果发布到 GitHub Pull Request 和 Dashboard。</desc>
+  <rect width="1600" height="620" fill="#f7f9fc"/>
+  <text x="90" y="86" fill="#172033" font-family="Hiragino Sans GB, Arial Unicode MS, sans-serif" font-size="40" font-weight="700">一份覆盖率报告的 Covivy 旅程</text>
+  <text x="90" y="130" fill="#596579" font-family="Hiragino Sans GB, Arial Unicode MS, sans-serif" font-size="22">从测试结果出发，经过可靠处理，回到开发者正在 review 的地方</text>
+
+  <g font-family="Hiragino Sans GB, Arial Unicode MS, sans-serif">
+    <rect x="80" y="220" width="230" height="160" rx="8" fill="#e7f2ff" stroke="#1677c8" stroke-width="3"/>
+    <text x="195" y="278" text-anchor="middle" fill="#124a75" font-size="27" font-weight="700">CI / Action</text>
+    <text x="195" y="320" text-anchor="middle" fill="#315d7d" font-size="20">运行测试</text>
+    <text x="195" y="352" text-anchor="middle" fill="#315d7d" font-size="20">上传覆盖率报告</text>
+
+    <rect x="380" y="220" width="230" height="160" rx="8" fill="#eaf8ef" stroke="#238b57" stroke-width="3"/>
+    <text x="495" y="278" text-anchor="middle" fill="#17613d" font-size="27" font-weight="700">FastAPI</text>
+    <text x="495" y="320" text-anchor="middle" fill="#367054" font-size="20">验证仓库 token</text>
+    <text x="495" y="352" text-anchor="middle" fill="#367054" font-size="20">保存并创建任务</text>
+
+    <rect x="680" y="220" width="230" height="160" rx="8" fill="#fff4dc" stroke="#c47a12" stroke-width="3"/>
+    <text x="795" y="278" text-anchor="middle" fill="#80500f" font-size="27" font-weight="700">PostgreSQL</text>
+    <text x="795" y="320" text-anchor="middle" fill="#785b31" font-size="20">报告与 PR 状态</text>
+    <text x="795" y="352" text-anchor="middle" fill="#785b31" font-size="20">任务锁、重试、退避</text>
+
+    <rect x="980" y="220" width="230" height="160" rx="8" fill="#f4edff" stroke="#7754b3" stroke-width="3"/>
+    <text x="1095" y="278" text-anchor="middle" fill="#533784" font-size="27" font-weight="700">Worker + 语义引擎</text>
+    <text x="1095" y="320" text-anchor="middle" fill="#665180" font-size="20">解析 diff 与源码</text>
+    <text x="1095" y="352" text-anchor="middle" fill="#665180" font-size="20">计算 patch coverage</text>
+
+    <rect x="1280" y="220" width="240" height="160" rx="8" fill="#ffecef" stroke="#c74358" stroke-width="3"/>
+    <text x="1400" y="278" text-anchor="middle" fill="#852b3a" font-size="27" font-weight="700">PR 反馈</text>
+    <text x="1400" y="320" text-anchor="middle" fill="#854451" font-size="20">Status + 稳定评论</text>
+    <text x="1400" y="352" text-anchor="middle" fill="#854451" font-size="20">文件与行级 Dashboard</text>
+
+    <g fill="none" stroke="#7a8699" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M320 300 H365"/><path d="M350 286 L365 300 L350 314"/>
+      <path d="M620 300 H665"/><path d="M650 286 L665 300 L650 314"/>
+      <path d="M920 300 H965"/><path d="M950 286 L965 300 L950 314"/>
+      <path d="M1220 300 H1265"/><path d="M1250 286 L1265 300 L1250 314"/>
+    </g>
+
+    <rect x="350" y="450" width="900" height="92" rx="8" fill="#ffffff" stroke="#d5dce7" stroke-width="2"/>
+    <text x="800" y="489" text-anchor="middle" fill="#263246" font-size="21" font-weight="700">可靠性护栏</text>
+    <text x="800" y="524" text-anchor="middle" fill="#5b6678" font-size="19">webhook / upload 乱序兼容 · force-push 旧报告隔离 · 路径歧义告警 · OAuth token 恢复</text>
+  </g>
+</svg>
+
