@@ -1,5 +1,7 @@
 import unittest
+from datetime import datetime, timedelta
 
+import httpx
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -18,7 +20,12 @@ from app.models import (
     UserSession,
     DashboardUser,
 )
-from app.providers.base import OAuthTokenResult, ProviderRepository, ProviderUser
+from app.providers.base import (
+    OAuthTokenRefreshError,
+    OAuthTokenResult,
+    ProviderRepository,
+    ProviderUser,
+)
 from app.providers.registry import reset_provider_overrides, set_provider_override
 
 
@@ -27,6 +34,10 @@ class FakeDashboardProvider:
 
     def __init__(self):
         self.rotated = False
+        self.list_access_tokens = []
+        self.list_unauthorized = 0
+        self.refresh_rejected = False
+        self.on_unauthorized = None
 
     def authorization_url(self, state, redirect_uri):
         return "https://github.example/login?state=%s&redirect_uri=%s" % (state, redirect_uri)
@@ -43,7 +54,26 @@ class FakeDashboardProvider:
     async def current_user(self, access_token):
         return ProviderUser(provider="github", external_id="42", login="ivy", name="Ivy")
 
+    async def refresh_access_token(self, refresh_token):
+        self.rotated = True
+        if self.refresh_rejected:
+            raise OAuthTokenRefreshError("bad_refresh_token")
+        return OAuthTokenResult(
+            access_token="gho_rotated",
+            refresh_token="ghr_rotated",
+            expires_at=datetime.utcnow() + timedelta(hours=8),
+            scope="repo,user:email",
+        )
+
     async def list_repositories(self, access_token):
+        self.list_access_tokens.append(access_token)
+        if self.list_unauthorized:
+            self.list_unauthorized -= 1
+            if self.on_unauthorized:
+                self.on_unauthorized()
+            request = httpx.Request("GET", "https://api.github.example/user/repos")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
         return [
             ProviderRepository(
                 provider="github",
@@ -289,6 +319,75 @@ class DashboardAuthTests(unittest.TestCase):
         self.assertEqual(settings.patch_coverage_target, 0.8)
         self.assertTrue(settings.status_enabled)
         self.assertTrue(settings.comment_enabled)
+
+    def test_dashboard_refreshes_expired_provider_token_before_listing_repositories(self):
+        self.login()
+        with self.Session() as session:
+            token = session.scalar(select(OAuthToken))
+            token.expires_at = datetime.utcnow() - timedelta(minutes=1)
+            session.commit()
+
+        response = self.client.get("/dashboard")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.provider.rotated)
+        self.assertEqual(self.provider.list_access_tokens, ["gho_rotated"])
+        with self.Session() as session:
+            token = session.scalar(select(OAuthToken))
+            self.assertEqual(token.access_token, "gho_rotated")
+            self.assertEqual(token.refresh_token, "ghr_rotated")
+            self.assertGreater(token.expires_at, datetime.utcnow())
+            self.assertEqual(token.scope, "repo,user:email")
+
+    def test_dashboard_refreshes_and_retries_once_after_provider_unauthorized(self):
+        self.login()
+        self.provider.list_unauthorized = 1
+
+        response = self.client.get("/dashboard")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("ivy/demo", response.text)
+        self.assertTrue(self.provider.rotated)
+        self.assertEqual(self.provider.list_access_tokens, ["gho_access", "gho_rotated"])
+
+    def test_dashboard_requires_login_when_provider_refresh_is_rejected(self):
+        self.login()
+        self.provider.list_unauthorized = 1
+        self.provider.refresh_rejected = True
+
+        response = self.client.get("/dashboard")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Log in to your account", response.text)
+        self.assertIn("Your provider session expired. Please sign in again.", response.text)
+        self.assertIn("covivy_session=", response.headers.get("set-cookie", ""))
+        self.assertIn("Max-Age=0", response.headers.get("set-cookie", ""))
+        with self.Session() as session:
+            self.assertIsNone(session.scalar(select(UserSession)))
+
+    def test_dashboard_reuses_token_rotated_by_concurrent_request(self):
+        self.login()
+        self.provider.list_unauthorized = 1
+        self.provider.refresh_rejected = True
+
+        def rotate_token():
+            with self.Session() as session:
+                token = session.scalar(select(OAuthToken))
+                token.access_token = "gho_concurrent"
+                token.refresh_token = "ghr_concurrent"
+                token.expires_at = datetime.utcnow() + timedelta(hours=8)
+                session.commit()
+
+        self.provider.on_unauthorized = rotate_token
+
+        response = self.client.get("/dashboard")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("ivy/demo", response.text)
+        self.assertFalse(self.provider.rotated)
+        self.assertEqual(self.provider.list_access_tokens, ["gho_access", "gho_concurrent"])
+        with self.Session() as session:
+            self.assertIsNotNone(session.scalar(select(UserSession)))
 
     def test_dashboard_marks_github_app_installed_repository_configured(self):
         self.login()

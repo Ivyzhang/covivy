@@ -1,7 +1,10 @@
+import json
 import unittest
 
 import httpx
 
+from app.providers.base import OAuthTokenRefreshError
+from app.providers.github import GitHubProvider
 from app.providers.gitlab import GitLabProvider
 from app.providers.registry import get_provider, provider_keys, reset_provider_overrides
 
@@ -17,6 +20,36 @@ class ProviderRegistryTests(unittest.TestCase):
 
 
 class GitLabProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_access_token(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "gl_rotated",
+                    "refresh_token": "gl_refresh_rotated",
+                    "expires_in": 7200,
+                    "scope": "api read_user",
+                },
+            )
+
+        provider = GitLabProvider(
+            client_id="client",
+            client_secret="secret",
+            base_url="https://gitlab.example",
+            transport=httpx.MockTransport(handler),
+        )
+
+        token = await provider.refresh_access_token("gl_refresh")
+
+        self.assertEqual(token.access_token, "gl_rotated")
+        self.assertEqual(token.refresh_token, "gl_refresh_rotated")
+        self.assertEqual(requests[0].url.path, "/oauth/token")
+        self.assertIn(b"grant_type=refresh_token", requests[0].content)
+        self.assertIn(b"refresh_token=gl_refresh", requests[0].content)
+
     async def test_gitlab_oauth_repo_diff_status_and_comment_requests(self):
         requests = []
 
@@ -98,6 +131,57 @@ class GitLabProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(note_id, 99)
         self.assertEqual(requests[0].url.path, "/oauth/token")
         self.assertIn("state=", provider.authorization_url("state", "https://callback"))
+
+
+class GitHubProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_refresh_access_token_rejects_oauth_error_payload(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "error": "bad_refresh_token",
+                    "error_description": "The refresh token is invalid.",
+                },
+            )
+
+        provider = GitHubProvider(
+            client_id="client",
+            client_secret="secret",
+            transport=httpx.MockTransport(handler),
+        )
+
+        with self.assertRaises(OAuthTokenRefreshError):
+            await provider.refresh_access_token("expired_refresh")
+
+    async def test_refresh_access_token(self):
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "gh_rotated",
+                    "refresh_token": "gh_refresh_rotated",
+                    "expires_in": 28800,
+                    "scope": "read:user repo",
+                },
+            )
+
+        provider = GitHubProvider(
+            client_id="client",
+            client_secret="secret",
+            transport=httpx.MockTransport(handler),
+        )
+
+        token = await provider.refresh_access_token("gh_refresh")
+
+        self.assertEqual(token.access_token, "gh_rotated")
+        self.assertEqual(token.refresh_token, "gh_refresh_rotated")
+        self.assertEqual(requests[0].url.path, "/login/oauth/access_token")
+        payload = json.loads(requests[0].content)
+        self.assertEqual(payload["grant_type"], "refresh_token")
+        self.assertEqual(payload["refresh_token"], "gh_refresh")
 
 
 if __name__ == "__main__":

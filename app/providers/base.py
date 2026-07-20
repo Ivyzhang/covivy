@@ -7,6 +7,10 @@ from typing import Optional, Protocol
 from app.github import PullFilePatch
 
 
+class OAuthTokenRefreshError(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class OAuthTokenResult:
     access_token: str
@@ -38,6 +42,9 @@ class CodeHostProvider(Protocol):
     key: str
 
     def authorization_url(self, state: str, redirect_uri: str) -> str:
+        raise NotImplementedError
+
+    async def refresh_access_token(self, refresh_token: str) -> OAuthTokenResult:
         raise NotImplementedError
 
     async def exchange_code(self, code: str, redirect_uri: str) -> OAuthTokenResult:

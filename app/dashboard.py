@@ -16,7 +16,7 @@ from app.models import (
     RepositorySettings,
     UserSession,
 )
-from app.providers.base import OAuthTokenResult, ProviderRepository, ProviderUser
+from app.providers.base import CodeHostProvider, OAuthTokenResult, ProviderRepository, ProviderUser
 from app.security import generate_upload_token, hash_upload_token
 
 SESSION_COOKIE = "covivy_session"
@@ -204,10 +204,45 @@ def upsert_identity_and_token(
     return identity
 
 
-def token_for_identity(session: Session, identity: ExternalIdentity) -> OAuthToken:
-    token = session.scalar(select(OAuthToken).where(OAuthToken.identity_id == identity.id))
+def token_for_identity(
+    session: Session, identity: ExternalIdentity, *, for_update: bool = False
+) -> OAuthToken:
+    statement = select(OAuthToken).where(OAuthToken.identity_id == identity.id)
+    if for_update:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
+    token = session.scalar(statement)
     if token is None:
         raise PermissionError("OAuth token missing")
+    return token
+
+
+async def refresh_token_for_identity(
+    session: Session,
+    identity: ExternalIdentity,
+    provider: CodeHostProvider,
+    *,
+    force: bool = False,
+    failed_access_token: Optional[str] = None,
+) -> OAuthToken:
+    token = token_for_identity(session, identity)
+    refresh_at = datetime.utcnow() + timedelta(minutes=1)
+    if not force and (token.expires_at is None or token.expires_at > refresh_at):
+        return token
+
+    token = token_for_identity(session, identity, for_update=True)
+    if force and failed_access_token and token.access_token != failed_access_token:
+        return token
+    if not force and (token.expires_at is None or token.expires_at > refresh_at):
+        return token
+    if not token.refresh_token:
+        raise PermissionError("OAuth token refresh unavailable")
+
+    refreshed = await provider.refresh_access_token(token.refresh_token)
+    token.access_token = refreshed.access_token
+    token.refresh_token = refreshed.refresh_token or token.refresh_token
+    token.expires_at = refreshed.expires_at
+    token.scope = refreshed.scope or token.scope
+    session.flush()
     return token
 
 
